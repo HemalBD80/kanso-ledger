@@ -144,9 +144,10 @@ class LedgerReportBuilderTest {
         assertEquals(900L, report.closingBalanceCents)
 
         // Category breakdown de-duplicates by label and sums the same rows exactly
-        assertEquals(400L, report.categoryBreakdown.first { it.label == "dining" }.spentCents)
-        assertEquals(2, report.categoryBreakdown.first { it.label == "dining" }.transactionCount)
-        assertEquals(300L, report.categoryBreakdown.first { it.label == "groceries" }.spentCents)
+        assertEquals(400L, report.categoryBreakdown.first { it.label == "Food & Dining" }.spentCents)
+        assertEquals(2, report.categoryBreakdown.first { it.label == "Food & Dining" }.transactionCount)
+        assertEquals(300L, report.categoryBreakdown.first { it.label == "Groceries" }.spentCents)
+        assertEquals(1, report.categoryBreakdown.size)
     }
 
     @Test

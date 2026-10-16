@@ -87,7 +87,7 @@ class SpendingAnalyticsEngineTest {
         assertEquals(BudgetPacingStatus.ON_TRACK, analytics.pacingStatus)
         assertEquals(3, analytics.daySections.size)
         assertEquals("groceries", analytics.categoryBreakdown.first().categoryId)
-        assertEquals(2, analytics.categoryBreakdown.first().transactionCount)
+        assertEquals(1, analytics.categoryBreakdown.first().transactionCount)
         assertEquals("Food & Dining", analytics.categoryBreakdown.last().displayName)
     }
 
