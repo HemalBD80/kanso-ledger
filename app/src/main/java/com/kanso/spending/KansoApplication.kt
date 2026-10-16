@@ -15,6 +15,6 @@ class KansoApplication : Application() {
     }
 
     val repository: SpendingRepository by lazy {
-        SpendingRepository(database.spendingDao())
+        SpendingRepository(database.spendingDao(), this)
     }
 }

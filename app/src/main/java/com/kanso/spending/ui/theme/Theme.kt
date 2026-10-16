@@ -75,6 +75,17 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 @Composable
+fun KansoTheme(
+    darkTheme: Boolean = false,
+    content: @Composable () -> Unit
+) {
+    KansoSpendingTheme(
+        themeMode = if (darkTheme) LedgerThemeMode.OBSIDIAN_DARK else LedgerThemeMode.PAPER_LIGHT,
+        content = content
+    )
+}
+
+@Composable
 fun KansoSpendingTheme(
     themeMode: LedgerThemeMode = LedgerThemeMode.PAPER_LIGHT,
     content: @Composable () -> Unit

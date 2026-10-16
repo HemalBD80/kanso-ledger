@@ -30,14 +30,16 @@ data class SpendingDashboardUiState(
         remainingBudgetCents = SpendingRepository.DEFAULT_MONTHLY_BUDGET_CENTS,
         dailySafeToSpendCents = 6000L,
         averageDailyBurnCents = 0L,
-        projectedMonthEndCents = 0L,
+        dailyTargetCents = 6000L,
         budgetProgressFraction = 0f,
+        monthElapsedFraction = 0f,
         pacingStatus = BudgetPacingStatus.ON_TRACK,
         pacingDeltaPercent = 0,
+        recurringSpentCents = 0L,
         categoryBreakdown = emptyList(),
         dailyBars = emptyList(),
         daySections = emptyList(),
-        topMerchantSuggestions = emptyList()
+        merchantSuggestions = emptyList()
     ),
     val backupJsonPreview: String = "",
     val vaultStatusMessage: String? = null
@@ -54,7 +56,7 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
     private val vaultStatusMessage = MutableStateFlow<String?>(null)
 
     init {
-        viewModelScope.launch { repository.seedIfDatabaseEmpty(YearMonth.now()) }
+        viewModelScope.launch { repository.ensureInitialSeedIfNeeded() }
     }
 
     private val monthDataFlow = selectedMonth.flatMapLatest { ym ->
@@ -62,15 +64,14 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
             repository.observeExpensesForMonth(ym),
             repository.observeMonthlyBudget(ym),
             repository.observeCategoryBudgets(ym),
-            repository.observeRecentExpenses(120)
-        ) { expenses, monthlyBudget, catBudgets, recentAll ->
+            repository.currencySymbol
+        ) { expenses, monthlyBudget, catBudgets, currency ->
             MonthSnapshot(
                 yearMonth = ym,
                 expenses = expenses,
                 monthlyLimitCents = monthlyBudget?.overallLimitCents ?: SpendingRepository.DEFAULT_MONTHLY_BUDGET_CENTS,
-                currencySymbol = monthlyBudget?.currencySymbol ?: "$",
-                catBudgets = catBudgets,
-                recentAll = recentAll
+                currencySymbol = currency,
+                catBudgets = catBudgets
             )
         }
     }
@@ -82,15 +83,21 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
         isDarkTheme,
         combine(backupJsonPreview, vaultStatusMessage) { json, msg -> json to msg }
     ) { snap, catFilter, query, dark, (json, msg) ->
+        val trimmedQuery = query.trim().lowercase()
+        val filtered = snap.expenses.filter { exp ->
+            val matchesCat = catFilter == null || exp.categoryId.equals(catFilter.id, ignoreCase = true)
+            val matchesQuery = trimmedQuery.isEmpty() ||
+                exp.title.lowercase().contains(trimmedQuery) ||
+                exp.note.lowercase().contains(trimmedQuery) ||
+                exp.categoryId.lowercase().contains(trimmedQuery)
+            matchesCat && matchesQuery
+        }
         val analytics = SpendingAnalyticsEngine.computeMonthlyAnalytics(
             yearMonth = snap.yearMonth,
             monthExpenses = snap.expenses,
-            monthlyBudget = null,
+            filteredExpenses = filtered,
+            monthlyBudgetCents = snap.monthlyLimitCents,
             categoryBudgets = snap.catBudgets,
-            allHistoricalExpenses = snap.recentAll,
-            defaultMonthlyBudgetCents = snap.monthlyLimitCents,
-            selectedCategoryFilter = catFilter,
-            searchQuery = query,
             today = LocalDate.now()
         )
         SpendingDashboardUiState(
@@ -124,12 +131,23 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
         isRecurring: Boolean
     ) {
         viewModelScope.launch {
-            repository.saveExpense(existingId, title, amountCents, category, paymentMethod, timestampMillis, note, isRecurring)
+            repository.saveExpense(
+                ExpenseEntity(
+                    id = existingId ?: 0L,
+                    title = title.trim().ifEmpty { category.displayName },
+                    amountCents = amountCents,
+                    categoryId = category.id,
+                    paymentMethod = paymentMethod.id,
+                    timestampEpochMillis = timestampMillis,
+                    note = note.trim(),
+                    isRecurring = isRecurring
+                )
+            )
         }
     }
 
     fun deleteExpense(expense: ExpenseEntity) {
-        viewModelScope.launch { repository.deleteExpense(expense) }
+        viewModelScope.launch { repository.deleteExpense(expense.id) }
     }
 
     fun saveBudgetConfiguration(
@@ -139,23 +157,24 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
     ) {
         viewModelScope.launch {
             val ym = selectedMonth.value
-            repository.updateMonthlyBudget(ym, monthlyLimitCents, currencySymbol)
+            repository.setCurrencySymbol(currencySymbol)
+            repository.saveMonthlyBudget(ym, monthlyLimitCents)
             categoryLimits.forEach { (cat, cents) ->
-                repository.updateCategoryBudget(ym, cat, cents)
+                repository.saveCategoryBudget(ym, cat, cents)
             }
         }
     }
 
     fun generateLocalBackupJson() {
         viewModelScope.launch {
-            backupJsonPreview.value = repository.exportBackupJson()
+            backupJsonPreview.value = repository.exportLocalBackupJson()
             vaultStatusMessage.value = "Local JSON snapshot ready (${backupJsonPreview.value.length} bytes)."
         }
     }
 
     fun importLocalBackupJson(rawJson: String) {
         viewModelScope.launch {
-            runCatching { repository.importBackupJson(rawJson, clearExistingFirst = false) }
+            repository.importLocalBackupJson(rawJson)
                 .onSuccess { count -> vaultStatusMessage.value = "Restored $count records into local SQLite." }
                 .onFailure { e -> vaultStatusMessage.value = "Restore error: ${e.message}" }
         }
@@ -163,15 +182,15 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
 
     fun reseedSampleLedger() {
         viewModelScope.launch {
-            repository.wipeAllLocalData()
-            repository.seedIfDatabaseEmpty(selectedMonth.value)
+            repository.wipeAllData()
+            repository.seedSampleMonthData(selectedMonth.value)
             vaultStatusMessage.value = "Sample editorial ledger loaded into local SQLite."
         }
     }
 
     fun wipeAllLocalData() {
         viewModelScope.launch {
-            repository.wipeAllLocalData()
+            repository.wipeAllData()
             vaultStatusMessage.value = "All local SQLite tables wiped clean."
         }
     }
@@ -183,8 +202,7 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
         val expenses: List<ExpenseEntity>,
         val monthlyLimitCents: Long,
         val currencySymbol: String,
-        val catBudgets: List<CategoryBudgetEntity>,
-        val recentAll: List<ExpenseEntity>
+        val catBudgets: List<CategoryBudgetEntity>
     )
 
     class Factory(private val repository: SpendingRepository) : ViewModelProvider.Factory {

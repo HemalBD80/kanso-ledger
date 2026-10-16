@@ -41,10 +41,9 @@ class SpendingAnalyticsEngineTest {
         val analytics = SpendingAnalyticsEngine.computeMonthlyAnalytics(
             yearMonth = ym,
             monthExpenses = expenses,
-            monthlyBudget = MonthlyBudgetEntity(yearMonth = "2026-10", overallLimitCents = 150_000L),
+            filteredExpenses = expenses,
+            monthlyBudgetCents = 150_000L,
             categoryBudgets = emptyList(),
-            allHistoricalExpenses = expenses,
-            defaultMonthlyBudgetCents = 150_000L,
             today = LocalDate.of(2026, 10, 10),
             zoneId = zone
         )

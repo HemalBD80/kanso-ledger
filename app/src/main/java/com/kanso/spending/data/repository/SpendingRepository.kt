@@ -145,6 +145,7 @@ class SpendingRepository(
     }
 
     companion object {
+        const val DEFAULT_MONTHLY_BUDGET_CENTS: Long = 180_000L
         private const val PREFS_NAME = "kanso_local_prefs"
         private const val KEY_CURRENCY_SYMBOL = "currency_symbol"
         private const val KEY_THEME_MODE = "theme_mode"

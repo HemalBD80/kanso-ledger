@@ -72,6 +72,16 @@ object KeypadExpressionEvaluator {
         )
     }
 
+    fun evaluateToCents(expression: String): Long = evaluate(expression).totalCents
+
+    fun containsOperator(expression: String): Boolean = evaluate(expression).hasOperator
+
+    fun appendToken(currentExpression: String, token: String): String = appendKey(currentExpression, token)
+
+    fun backspace(currentExpression: String): String = appendKey(currentExpression, "BACKSPACE")
+
+    fun clear(): String = "0"
+
     fun appendKey(currentExpression: String, key: String): String {
         val expr = if (currentExpression == "0") "" else currentExpression
         return when (key) {

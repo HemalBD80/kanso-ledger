@@ -141,7 +141,7 @@ fun SpendingDashboardScreen(
         TactileExpenseSheet(
             editingExpense = editingExpense,
             currencySymbol = uiState.currencySymbol,
-            merchantSuggestions = uiState.analytics.topMerchantSuggestions,
+            merchantSuggestions = uiState.analytics.merchantSuggestions.map { it.title },
             onSaveExpense = onSaveExpense,
             onDismiss = {
                 showExpenseSheet = false
