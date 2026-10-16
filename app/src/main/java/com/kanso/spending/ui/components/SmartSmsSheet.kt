@@ -13,8 +13,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CalendarToday
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,14 +28,12 @@ import com.kanso.spending.data.local.entity.SmsDetectionEntity
 import com.kanso.spending.domain.CurrencyFormatter
 import com.kanso.spending.domain.KeypadExpressionEvaluator
 import com.kanso.spending.domain.sms.LedgerAction
+import com.kanso.spending.domain.sms.SmsAccessPolicy
 import com.kanso.spending.domain.sms.SmsImportMode
 import com.kanso.spending.ui.SmartLedgerActions
 import com.kanso.spending.ui.SmartLedgerUiState
 import com.kanso.spending.ui.SpendingDashboardUiState
 import com.kanso.spending.ui.theme.LocalKansoColors
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
 
 /**
  * Smart SMS Tracking: opt-in activation with an honest rationale, import mode,
@@ -67,12 +63,7 @@ fun SmartSmsSheet(
     }
     val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
-    var fromDate by remember { mutableStateOf(LocalDate.now().minusDays(7)) }
-    var toDate by remember { mutableStateOf(LocalDate.now()) }
-    var showFromPicker by remember { mutableStateOf(false) }
-    var showToPicker by remember { mutableStateOf(false) }
     var pasteText by remember { mutableStateOf("") }
-    val zone = ZoneId.systemDefault()
 
     fun hasSmsPermission() = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) ==
         PackageManager.PERMISSION_GRANTED
@@ -132,6 +123,21 @@ fun SmartSmsSheet(
                 Text(it, style = MaterialTheme.typography.bodySmall, color = colors.fjordAccent)
             }
 
+            // Revocation: the feature is on but the grant is gone. Say so plainly.
+            if (smartState.smartSettings.smsEnabled && !hasSmsPermission()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    SmsAccessPolicy.revocationMessage(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.warningAccent,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.elevatedSurface)
+                        .padding(8.dp)
+                )
+            }
+
             smartState.statusMessage?.let { message ->
                 Spacer(Modifier.height(6.dp))
                 Text(
@@ -177,42 +183,13 @@ fun SmartSmsSheet(
                 color = colors.inkMuted
             )
 
-            // ---- history import with date range
+            // ---- history import with date range (preview-first, shared component)
             Spacer(Modifier.height(14.dp))
-            Text("IMPORT EXISTING MESSAGES (DATE-RANGED)", style = MaterialTheme.typography.labelSmall, color = colors.inkSecondary)
-            Spacer(Modifier.height(6.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = { showFromPicker = true }) {
-                    Icon(Icons.Outlined.CalendarToday, contentDescription = null, Modifier.size(14.dp), tint = colors.inkMuted)
-                    Spacer(Modifier.width(4.dp))
-                    Text("FROM $fromDate", style = MaterialTheme.typography.labelSmall)
-                }
-                TextButton(onClick = { showToPicker = true }) {
-                    Icon(Icons.Outlined.CalendarToday, contentDescription = null, Modifier.size(14.dp), tint = colors.inkMuted)
-                    Spacer(Modifier.width(4.dp))
-                    Text("TO $toDate", style = MaterialTheme.typography.labelSmall)
-                }
-            }
-            OutlinedButton(
-                onClick = {
-                    val fromMillis = fromDate.atStartOfDay(zone).toInstant().toEpochMilli()
-                    val toMillis = toDate.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
-                    if (hasSmsPermission()) {
-                        actions.onImportHistory(context, fromMillis, toMillis)
-                    } else {
-                        permissionNote = "SMS access is needed for history import — or paste messages below instead."
-                        smsLauncher.launch(Manifest.permission.READ_SMS)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().height(46.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("IMPORT MESSAGES IN RANGE", style = MaterialTheme.typography.labelLarge)
-            }
+            HistoryImportSection(
+                actions = actions,
+                currencySymbol = uiState.currencySymbol
+            )
+
             // ---- paste alternative
             Spacer(Modifier.height(10.dp))
             Text("PASTE OR SHARE A MESSAGE (NO PERMISSION NEEDED)", style = MaterialTheme.typography.labelSmall, color = colors.inkSecondary)
@@ -331,28 +308,6 @@ fun SmartSmsSheet(
                 modifier = Modifier.padding(bottom = 20.dp)
             )
         }
-    }
-
-    if (showFromPicker || showToPicker) {
-        val initial = if (showFromPicker) fromDate else toDate
-        val pickerState = rememberDatePickerState(
-            initialSelectedDateMillis = initial.atStartOfDay(zone).toInstant().toEpochMilli()
-        )
-        DatePickerDialog(
-            onDismissRequest = { showFromPicker = false; showToPicker = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    pickerState.selectedDateMillis?.let { millis ->
-                        val picked = LocalDate.ofEpochDay(millis / 86_400_000L)
-                        if (showFromPicker) fromDate = picked else toDate = picked
-                    }
-                    showFromPicker = false; showToPicker = false
-                }) { Text("OK") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showFromPicker = false; showToPicker = false }) { Text("Cancel") }
-            }
-        ) { DatePicker(state = pickerState) }
     }
 }
 

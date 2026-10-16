@@ -21,6 +21,7 @@ import com.kanso.spending.data.model.PaymentMethod
 import com.kanso.spending.data.repository.DetectionApproval
 import com.kanso.spending.data.repository.LedgerThemeMode
 import com.kanso.spending.data.repository.SmartSettings
+import com.kanso.spending.data.repository.SmsImportPreview
 import com.kanso.spending.data.repository.SmsIngestSummary
 import com.kanso.spending.data.repository.SpendingRepository
 import com.kanso.spending.domain.BudgetPacingStatus
@@ -476,7 +477,7 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
             recentDetections = allDetections.take(20),
             smartSettings = settings,
             lastIngestSummary = summary,
-            lastBatchId = batch,
+            lastBatchId = allDetections.maxByOrNull { it.createdAtMillis }?.batchId ?: batch,
             recurringRules = rules,
             recurringCandidates = candidates,
             forecastItems = forecastItems,
@@ -711,12 +712,20 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
     }
 
     /** Date-filtered historical import (requires READ_SMS, requested by the UI). */
-    fun importSmsHistory(context: Context, fromMillis: Long, toMillis: Long) {
+    fun importSmsHistory(context: Context, fromMillis: Long, toMillis: Long) =
+        importSmsHistoryAs(context, fromMillis, toMillis, repository.smartSettings.value.smsImportMode)
+
+    /**
+     * Import with an explicit one-shot mode — the initial-import flow lets the
+     * user choose "auto-record the confident ones" or "review everything first"
+     * without silently rewriting their saved default mode.
+     */
+    fun importSmsHistoryAs(context: Context, fromMillis: Long, toMillis: Long, mode: SmsImportMode) {
         viewModelScope.launch {
             runCatching {
                 val messages = SmsHistoryReader.read(context.applicationContext, fromMillis, toMillis)
                 if (messages.isEmpty()) return@runCatching null
-                repository.ingestSmsBatch(messages, repository.smartSettings.value.smsImportMode)
+                repository.ingestSmsBatch(messages, mode)
             }.fold(
                 onSuccess = { summary ->
                     if (summary == null) {
@@ -729,6 +738,40 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
                 },
                 onFailure = {
                     smartStatus(it.message ?: "Import failed — check that SMS permission is granted.")
+                }
+            )
+        }
+    }
+
+    /**
+     * Dry-run the same range: parses and plans but writes nothing. [onResult]
+     * receives null when reading failed (permission denied/revoked) — the
+     * reason is placed in smart status, which the UI already surfaces.
+     */
+    fun previewSmsHistory(
+        context: Context,
+        fromMillis: Long,
+        toMillis: Long,
+        onResult: (SmsImportPreview?) -> Unit
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                repository.previewSmsBatch(
+                    SmsHistoryReader.read(context.applicationContext, fromMillis, toMillis)
+                )
+            }.fold(
+                onSuccess = { preview ->
+                    smartStatus(
+                        if (preview.totalMessages == 0) "No messages found in that date range."
+                        else "Preview ready — nothing has been imported yet."
+                    )
+                    onResult(preview)
+                },
+                onFailure = {
+                    smartStatus(
+                        it.message ?: "Could not read messages — check that SMS permission is granted."
+                    )
+                    onResult(null)
                 }
             )
         }

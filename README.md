@@ -33,15 +33,20 @@ Currency is **Bangladeshi Taka (৳)** by default and everything starts at **৳
 ## 2. Features
 
 ### 2.1 Smart SMS Tracking (optional, on-device)
+- **First-launch Smart Setup**: a one-time onboarding screen explains the feature and its privacy implications, then offers exactly two choices — *Enable Smart SMS Tracking* or *Continue without SMS access*. Permissions (`READ_SMS` for history, `RECEIVE_SMS` for incoming messages, `POST_NOTIFICATIONS` optional) are requested only from an explicit tap, never silently. Denial, permanent denial and later revocation are handled with plain-language guidance and the documented fallbacks (paste/share + full manual tracking); revoking access while the feature is on pauses message reading and says so — your records are untouched
 - Off by default; enabling shows **why** access is needed before the system prompt
 - Deterministic, hand-written parsers for **bKash, Nagad, Rocket, banks and cards** — pure Kotlin, no cloud ML, no model downloads, extensible rule tables
-- Extracts: transaction type, amount, fee, datetime, reference id, provider, account hint, remaining balance
+- Recognizes money sent/received, card & ATM activity, wallet/bank transfers, **mobile recharge & internet packages**, **utility and other bill payments**, refunds/reversals, fees, and balance notices (which never become transactions)
+- Extracts: transaction type, amount, fee, datetime, reference id, provider, account hint, merchant/recipient, reported balance
 - **Two import modes**: *Review before save* (everything waits) and *Auto* (only high-confidence transactions save immediately). Ambiguous messages **always** wait for review — the app never guesses
+- **Preview-first history import**: a dry run reports confident / needs-review / duplicate / ignored / balance-notice counts plus parsed samples **before anything is written**, then you explicitly choose *record the confident ones now* or *review everything first* — one-shot per import, your saved default mode is not rewritten. Duplicates of what you already have are listed for inspection (provider, amount, reference)
 - Review queue: confirm, edit amount, pick category/account/transfer endpoints, **save-as-rule** for the merchant, or reject. Rejection records nothing
 - **Deduplication**: fingerprint = SHA-256 of `provider|ref|REF` when a reference id exists, otherwise `provider|sender|amount|type|timestamp/1000`. Identical amounts alone are never treated as the same transaction — redelivered broadcasts and history re-imports cannot double-record
-- Date-filtered **historical import** with counts; **undo last import**; **clear SMS import history** (erases metadata + review queue, never your recorded transactions)
+- Date-filtered **historical import**; **undo last import** (removes the batch and recalculates balances); **clear SMS import history** (erases metadata + review queue, never your recorded transactions)
 - **Paste** a single message or **share** text into the app from any app — zero SMS permission needed
-- Privacy: message bodies live in memory only during parsing — **never stored, logged, notified, backed up or crash-reported**. Only structured fields and fingerprints reach the database
+- Dashboard status line: tracking **ON/OFF**, processing mode, last successful run, pending count — and the Smart SMS sheet covers review, correction, undo, mode changes and disabling
+- Incoming processing is **permission-gated and failure-contained**: a database error during a broadcast never crashes the app, and idempotent fingerprints make the redelivery safe
+- Privacy: message bodies live in memory only during parsing — **never stored, logged, notified, backed up or crash-reported**. Only structured fields and fingerprints reach the database. All parsing, categorization, deduplication and calculations run on-device — no cloud ML, no external AI APIs
 - Turning Smart Tracking off disables all message reading; manual tracking is untouched
 
 ### 2.2 Multi-account ledger, transfers & reconciliation
@@ -99,9 +104,13 @@ Currency is **Bangladeshi Taka (৳)** by default and everything starts at **৳
 ## 3. Screens / workflows
 
 ```
+First launch: SmartOnboardingScreen (shown once) — welcome & privacy → two explicit
+        choices (enable Smart SMS / continue without SMS) → permission taps → initial
+        history import with preview + duplicate inspection + auto-vs-review choice
 Dashboard
 ├── Balance strip (available balance = net funds, money in • month, expenses • month)
-├── Intelligence: NET FUNDS • ALL ACCOUNTS (+ pending badge, reconciliation warning) + observations
+├── Intelligence: NET FUNDS • ALL ACCOUNTS (+ pending badge, reconciliation warning,
+│        smart status: ON/OFF • mode • last run • pending) + observations
 ├── Action rows: ADD MONEY • MANAGE CATEGORIES • DOWNLOAD REPORT
 │                SMART SMS • ACCOUNTS • CALENDAR • RECURRING • GOALS • QUICK ENTRY • SMART SETTINGS
 ├── Hero ledger card + daily spend rhythm chart
@@ -111,6 +120,7 @@ Dashboard
 Sheets: TactileExpenseSheet • MoneyInSheet • CategoryManagerSheet • ReportSheet • BudgetPlannerSheet
         • LocalVaultSheet • SmartSmsSheet • AccountsSheet • CalendarSheet • RecurringSheet
         • GoalsSheet • QuickEntrySheet • SmartSettingsSheet
+        (SmartSmsSheet & onboarding share HistoryImportSection: date-ranged preview-first import)
 App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 ```
 
@@ -140,7 +150,8 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 │   │   └── LocalBackupManager.kt     (JSON snapshot schema v3 — body-free, v1/v2 still restore)
 │   └── repository/      SpendingRepository (accounts, transfers, ingest, approvals, rules, goals…)
 ├── domain/              pure Kotlin, JVM-testable
-│   ├── sms/             SmsModels, SmsParsingRules, SmsParser, SmsIngestPlanner (dedup/mode routing)
+│   ├── sms/             SmsModels, SmsParsingRules, SmsParser, SmsIngestPlanner (dedup/mode routing),
+│   │                    SmsAccessPolicy (feature/permission gates for receiver + UI)
 │   ├── accounts/        AccountSnapshot, AccountBalanceEngine, AccountStateFactory (reconciliation)
 │   ├── recurring/       RecurringDetector (patterns + labelled forecasts)
 │   ├── calendar/        CalendarEngine · goals/ SavingsGoalEngine · insights/ InsightsEngine
@@ -151,7 +162,9 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
     ├── SpendingViewModel.kt  (coreUiState + SmartLedgerUiState, actions, reports)
     ├── SmartLedgerActions.kt (callback bundle for all intelligence features)
     ├── components/  … existing sheets … + SmartSmsSheet, AccountsSheet, CalendarSheet,
-    │                RecurringSheet, GoalsSheet, QuickEntrySheet, SmartSettingsSheet
+    │                RecurringSheet, GoalsSheet, QuickEntrySheet, SmartSettingsSheet,
+    │                HistoryImportSection (preview-first import, shared),
+    │                SmartOnboardingScreen (first-launch Smart Setup)
     └── screens/     SpendingDashboardScreen.kt (intelligence section + action row)
 /app/src/test/java/com/kanso/spending/
 ├── domain/… (analytics, report ranges + v2 report contract, keypad, categories, insights)
@@ -185,7 +198,7 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 3. `./gradlew test` — run the unit tests
 4. `./gradlew assembleRelease` — produce the APK at `app/build/outputs/apk/release/`
 
-> **Local host note**: this workspace is aarch64 Linux while Google's `aapt2`/`d8`/`r8` launchers ship x86-64 only, so builds happen in CI. Use the GitHub Actions workflow below. The pure Kotlin domain + data layer compiles and tests locally (JDK 17 + kotlinc, 141 tests); the Compose/Room-processor layer is verified by CI.
+> **Local host note**: this workspace is aarch64 Linux while Google's `aapt2`/`d8`/`r8` launchers ship x86-64 only, so builds happen in CI. Use the GitHub Actions workflow below. The pure Kotlin domain + data layer compiles and tests locally (JDK 17 + kotlinc, 153 tests); the Compose/Room-processor layer is verified by CI.
 
 ## 9. GitHub Actions build & release
 
@@ -217,7 +230,7 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 ./gradlew test
 ```
 
-**141 locally verified tests** (JDK 17 + kotlinc, same sources CI builds) covering: analytics totals, zero-budget truthfulness, report ranges & boundaries, the v2 report contract (fees separable yet debited, transfers excluded from income/expense, SMS-vs-manual origin counts, pending counted-but-never-money, refund breakout, reconciliation + account sections in CSV, transfer-fee balance agreement), refund single-counting, CSV totals reconciliation, category seed integrity, payment methods + legacy ids, keypad math, **SMS parsing on fictional fixtures only**, **ingest planning (dedup fingerprints, modes, balance-only, account resolution)**, **account state factory (fees, method fallback, transfers net-zero, pending isolation, reconciliation)**, recurring detection & forecasts, savings-goal projections, calendar day/week/month sums, insights inputs.
+**153 locally verified tests** (JDK 17 + kotlinc, same sources CI builds) covering: analytics totals, zero-budget truthfulness, report ranges & boundaries, the v2 report contract (fees separable yet debited, transfers excluded from income/expense, SMS-vs-manual origin counts, pending counted-but-never-money, refund breakout, reconciliation + account sections in CSV, transfer-fee balance agreement), refund single-counting, CSV totals reconciliation, category seed integrity, payment methods + legacy ids, keypad math, **SMS parsing on fictional fixtures only** (incl. recharge, utility bills, data packages), **ingest planning (dedup fingerprints, modes, balance-only, account resolution, historical re-import idempotency in both modes, duplicate notices)**, **SMS access policy (feature off / permission denied / revoked → processing gated, records untouched)**, **account state factory (fees, method fallback, transfers net-zero, pending isolation, reconciliation)**, recurring detection & forecasts, savings-goal projections, calendar day/week/month sums, insights inputs.
 
 **Not covered (disclosed)**: Room migrations (`1→2`, `2→3`) execute on Android — no JVM harness exists for them here; PDF rendering and the Compose UI compile only in CI (`android.graphics.pdf` / Compose cannot be unit-tested on JVM); SMS inbox reading, broadcast delivery and BiometricPrompt are runtime behaviours that require a device.
 

@@ -563,6 +563,49 @@ private fun IntelligenceSection(
                         )
                     }
                 }
+
+                // ---- smart tracking status: enabled, mode, last run, pending
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.background)
+                        .border(1.dp, colors.hairlineBorder, RoundedCornerShape(8.dp))
+                        .clickable(onClick = onOpenReview)
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        val smsOn = smartState.smartSettings.smsEnabled
+                        Text(
+                            if (smsOn) "SMART TRACKING: ON" else "SMART TRACKING: OFF — MANUAL ENTRY UNAFFECTED",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (smsOn) colors.positiveAccent else colors.inkMuted,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        val modeLabel =
+                            if (smartState.smartSettings.smsImportMode == com.kanso.spending.domain.sms.SmsImportMode.AUTO) {
+                                "auto-record confident"
+                            } else {
+                                "review first"
+                            }
+                        val lastRun = smartState.lastIngestSummary
+                            ?.let { "last run: ${it.recorded} recorded, ${it.queuedForReview} queued" }
+                            ?: "no successful processing yet"
+                        Text(
+                            "Mode: $modeLabel · $lastRun · ${smartState.pendingDetections.size} pending",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.inkSecondary
+                        )
+                    }
+                    Text(
+                        "MANAGE",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.fjordAccent
+                    )
+                }
             }
         }
 

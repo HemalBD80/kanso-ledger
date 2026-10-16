@@ -28,6 +28,7 @@ import androidx.lifecycle.lifecycleScope
 import com.kanso.spending.notifications.AppNotifier
 import com.kanso.spending.ui.SmartLedgerActions
 import com.kanso.spending.ui.SpendingViewModel
+import com.kanso.spending.ui.components.SmartOnboardingScreen
 import com.kanso.spending.ui.screens.SpendingDashboardScreen
 import com.kanso.spending.ui.theme.KansoTheme
 import com.kanso.spending.ui.theme.LocalKansoColors
@@ -41,6 +42,10 @@ class MainActivity : FragmentActivity() {
     }
 
     private val appLocked = mutableStateOf(false)
+
+    /** Mirror of the persisted first-launch setup outcome (onboarding shown once). */
+    private val smartSetupDone = mutableStateOf(false)
+
     private val smartActions: SmartLedgerActions by lazy { buildSmartActions() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,6 +56,7 @@ class MainActivity : FragmentActivity() {
         // Behind the lock on cold start and after process death; rotation keeps
         // the process-wide flag so the prompt never fires mid-rotation.
         appLocked.value = repository.smartSettings.value.appLockEnabled && !processUnlocked
+        smartSetupDone.value = repository.isSmartSetupDone()
 
         if (savedInstanceState == null) {
             handleShareIntent(intent)
@@ -131,6 +137,20 @@ class MainActivity : FragmentActivity() {
                             onFallbackUnlock = {
                                 processUnlocked = true
                                 appLocked.value = false
+                            }
+                        )
+                    }
+
+                    // First-launch Smart Setup: an opaque screen over the still
+                    // composed dashboard (same pattern as the lock), dismissed
+                    // exactly once after the user's explicit choice.
+                    if (!smartSetupDone.value) {
+                        SmartOnboardingScreen(
+                            currencySymbol = uiState.currencySymbol,
+                            actions = smartActions,
+                            onFinish = {
+                                repository.markSmartSetupDone()
+                                smartSetupDone.value = true
                             }
                         )
                     }
@@ -224,6 +244,12 @@ class MainActivity : FragmentActivity() {
         onSetSmsEnabled = { viewModel.setSmsEnabled(it) },
         onSetImportMode = { viewModel.setSmsImportMode(it) },
         onImportHistory = { ctx, from, to -> viewModel.importSmsHistory(ctx, from, to) },
+        onPreviewHistory = { ctx, from, to, onResult ->
+            viewModel.previewSmsHistory(ctx, from, to, onResult)
+        },
+        onImportHistoryAs = { ctx, from, to, mode ->
+            viewModel.importSmsHistoryAs(ctx, from, to, mode)
+        },
         onPasteImport = { viewModel.importPastedSms(it) },
         onUndoLastImport = { viewModel.undoLastImport() },
         onClearSmsHistory = { viewModel.clearSmsImportHistory() },

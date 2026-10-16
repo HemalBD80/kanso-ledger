@@ -26,6 +26,7 @@ import com.kanso.spending.domain.accounts.AccountState
 import com.kanso.spending.domain.accounts.AccountStateFactory
 import com.kanso.spending.domain.categorization.CategoryRule
 import com.kanso.spending.domain.categorization.CategorySuggester
+import com.kanso.spending.domain.sms.DuplicateNotice
 import com.kanso.spending.domain.sms.IngestContext
 import com.kanso.spending.domain.sms.LedgerAction
 import com.kanso.spending.domain.sms.RawInboundSms
@@ -79,6 +80,41 @@ data class SmsIngestSummary(
     val duplicates: Int,
     val ignored: Int,
     val batchId: String
+)
+
+/**
+ * Dry-run outcome of a candidate historical import. Previewing writes
+ * nothing: no fingerprints, no detections, no ledger rows — the user sees
+ * what would happen (including which messages are duplicates of what they
+ * already have) before choosing auto-record or review-first.
+ */
+data class SmsImportPreview(
+    val totalMessages: Int,
+    /** High-confidence, unambiguous: would record immediately in AUTO mode. */
+    val confidentCount: Int,
+    /** Ambiguous or needs-review: waits for approval in either mode. */
+    val queueCount: Int,
+    /** Already-known fingerprints: skipped by the idempotent import. */
+    val duplicateCount: Int,
+    /** Not financial (OTP, promo, personal chatter): ignored entirely. */
+    val ignoredCount: Int,
+    /** Balance notices only: recognised but never become transactions. */
+    val balanceNoticeCount: Int,
+    /** Parsed fields of what would be imported — message bodies never. */
+    val samples: List<SmsPreviewSample>,
+    /** Skipped duplicates, structured only, for inspection. */
+    val duplicateItems: List<DuplicateNotice>
+)
+
+/** One parsed preview row. Never contains the SMS body. */
+data class SmsPreviewSample(
+    val provider: String,
+    val merchantOrCounterparty: String,
+    val amountCents: Long?,
+    val feeCents: Long,
+    val txType: String,
+    val confidence: Int,
+    val referenceId: String?
 )
 
 /**
@@ -473,6 +509,18 @@ class SpendingRepository(
         _smartSettings.value = next
     }
 
+    // ------------------------------------------------ first-launch smart setup
+
+    /**
+     * The one-time setup screen (Smart SMS onboarding) writes its outcome here
+     * so it appears exactly once. Absent = first launch, no choice made yet.
+     */
+    fun isSmartSetupDone(): Boolean = prefs.getBoolean(KEY_SMART_SETUP_DONE, false)
+
+    fun markSmartSetupDone() {
+        prefs.edit().putBoolean(KEY_SMART_SETUP_DONE, true).apply()
+    }
+
     // ------------------------------------------------------------- accounts
 
     fun observeAccounts(): Flow<List<AccountEntity>> = spendingDao.observeAccounts()
@@ -711,6 +759,22 @@ class SpendingRepository(
     suspend fun latestDetectionBatchId(): String? =
         spendingDao.getAllDetectionsSnapshot().firstOrNull()?.batchId
 
+    /** Shared facts for one batch: known fingerprints (ledger + SMS meta) and account hints. */
+    private suspend fun buildIngestContext(mode: SmsImportMode, batchId: String): IngestContext {
+        val accounts = spendingDao.getAllAccountsSnapshot()
+        val known = HashSet<String>(spendingDao.getAllKnownFingerprints())
+        known.addAll(spendingDao.getAllLedgerFingerprints())
+        return IngestContext(
+            knownFingerprints = known,
+            mode = mode,
+            batchId = batchId,
+            nowMillis = System.currentTimeMillis(),
+            hintToAccountId = accounts.filter { it.note.isNotBlank() }
+                .associate { it.note.lowercase() to it.id },
+            nameToAccountId = accounts.associate { it.name.lowercase() to it.id }
+        )
+    }
+
     /**
      * Parse, de-duplicate and persist one batch of messages. Nothing here ever
      * stores a message body — only fingerprints, structured fields, and the
@@ -723,20 +787,8 @@ class SpendingRepository(
         if (messages.isEmpty()) return SmsIngestSummary(0, 0, 0, 0, 0, "")
         seedDefaultAccountsIfMissing()
 
-        val accounts = spendingDao.getAllAccountsSnapshot()
-        val known = HashSet<String>(spendingDao.getAllKnownFingerprints())
-        known.addAll(spendingDao.getAllLedgerFingerprints())
-
         val batchId = "batch_${System.currentTimeMillis()}_${auditCounter.incrementAndGet()}"
-        val context = IngestContext(
-            knownFingerprints = known,
-            mode = mode,
-            batchId = batchId,
-            nowMillis = System.currentTimeMillis(),
-            hintToAccountId = accounts.filter { it.note.isNotBlank() }
-                .associate { it.note.lowercase() to it.id },
-            nameToAccountId = accounts.associate { it.name.lowercase() to it.id }
-        )
+        val context = buildIngestContext(mode, batchId)
         val plan = SmsIngestPlanner.plan(messages, context)
         val now = context.nowMillis
 
@@ -824,6 +876,48 @@ class SpendingRepository(
             duplicates = plan.duplicateCount,
             ignored = plan.ignoredCount,
             batchId = batchId
+        )
+    }
+
+    /**
+     * Dry run for a candidate historical import: parses and plans exactly the
+     * way [ingestSmsBatch] would, but persists nothing — no meta rows, no
+     * detections, no fingerprints, no ledger rows. Used by the first-launch
+     * flow and the import preview so the user sees confident/queued/duplicate
+     * counts before choosing how (or whether) to import.
+     *
+     * The counts are mode-independent: [SmsImportPreview.confidentCount] is
+     * what AUTO mode would record now, [SmsImportPreview.queueCount] is what
+     * either mode keeps waiting for review.
+     */
+    suspend fun previewSmsBatch(messages: List<RawInboundSms>): SmsImportPreview {
+        if (messages.isEmpty()) {
+            return SmsImportPreview(0, 0, 0, 0, 0, 0, emptyList(), emptyList())
+        }
+        val context = buildIngestContext(SmsImportMode.AUTO, "preview")
+        val plan = SmsIngestPlanner.plan(messages, context)
+        val samples = plan.items.mapNotNull { item ->
+            val planned = item.detection ?: return@mapNotNull null
+            val tx = planned.parsed
+            SmsPreviewSample(
+                provider = tx.provider,
+                merchantOrCounterparty = tx.merchantOrCounterparty,
+                amountCents = tx.amountCents,
+                feeCents = tx.feeCents,
+                txType = tx.type.name,
+                confidence = tx.confidence,
+                referenceId = tx.referenceId
+            )
+        }
+        return SmsImportPreview(
+            totalMessages = messages.size,
+            confidentCount = plan.recordedCount,
+            queueCount = plan.pendingCount,
+            duplicateCount = plan.duplicateCount,
+            ignoredCount = plan.ignoredCount,
+            balanceNoticeCount = plan.items.count { it.detection == null },
+            samples = samples.take(20),
+            duplicateItems = plan.duplicateItems.take(10)
         )
     }
 
@@ -1363,6 +1457,7 @@ class SpendingRepository(
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_SMS_ENABLED = "sms_enabled"
         private const val KEY_SMS_MODE = "sms_import_mode"
+        private const val KEY_SMART_SETUP_DONE = "smart_setup_done"
         private const val KEY_NOTIF_DETECTED = "notif_detected"
         private const val KEY_NOTIF_BUDGET = "notif_budget"
         private const val KEY_NOTIF_RECONCILE = "notif_reconcile"

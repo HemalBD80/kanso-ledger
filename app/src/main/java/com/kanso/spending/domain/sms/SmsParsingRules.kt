@@ -78,7 +78,11 @@ object BuiltinSmsRules {
         directionKeywords = mapOf(
             SmsTxType.MONEY_SENT to listOf("have sent", "you have sent", "sent bdt", "payment sent", "send money"),
             SmsTxType.MONEY_RECEIVED to listOf("have received", "you have received", "payment received", "received bdt"),
-            SmsTxType.PURCHASE to listOf("payment to", "merchant payment", "spent"),
+            SmsTxType.PURCHASE to listOf(
+                "payment to", "merchant payment", "spent",
+                // bill payments and recharges are purchases (money out)
+                "recharge", "bill payment", "electricity bill", "internet package"
+            ),
             SmsTxType.WITHDRAWAL to listOf("cash out", "withdrawn", "withdraw"),
             SmsTxType.FEE to listOf("fee", "charge"),
             SmsTxType.BALANCE_ONLY to listOf("current balance", "available balance is", "balance is"),
@@ -94,7 +98,10 @@ object BuiltinSmsRules {
         directionKeywords = mapOf(
             SmsTxType.MONEY_SENT to listOf("withdrawn", "sent to", "paid to", "payment of"),
             SmsTxType.MONEY_RECEIVED to listOf("received", "credited"),
-            SmsTxType.PURCHASE to listOf("purchase", "spent", "merchant"),
+            SmsTxType.PURCHASE to listOf(
+                "purchase", "spent", "merchant",
+                "recharge", "bill payment", "electricity bill", "internet package"
+            ),
             SmsTxType.WITHDRAWAL to listOf("withdrawn", "cash out"),
             SmsTxType.FEE to listOf("fee", "charge"),
             SmsTxType.BALANCE_ONLY to listOf("avl bal", "available balance", "current balance"),
@@ -110,7 +117,10 @@ object BuiltinSmsRules {
         directionKeywords = mapOf(
             SmsTxType.MONEY_SENT to listOf("sent to", "you have sent", "paid to"),
             SmsTxType.MONEY_RECEIVED to listOf("received", "credited"),
-            SmsTxType.PURCHASE to listOf("spent", "purchase", "merchant payment"),
+            SmsTxType.PURCHASE to listOf(
+                "spent", "purchase", "merchant payment",
+                "recharge", "bill payment", "electricity bill", "internet package"
+            ),
             SmsTxType.WITHDRAWAL to listOf("withdrawn", "cash out"),
             SmsTxType.FEE to listOf("fee", "charge"),
             SmsTxType.BALANCE_ONLY to listOf("new balance", "available balance", "current balance"),
@@ -126,7 +136,10 @@ object BuiltinSmsRules {
         directionKeywords = mapOf(
             SmsTxType.MONEY_SENT to listOf("debited", "paid to", "transferred to", "sent to"),
             SmsTxType.MONEY_RECEIVED to listOf("credited", "deposited", "received"),
-            SmsTxType.PURCHASE to listOf("spent on", "used for", "purchase at", "pos purchase"),
+            SmsTxType.PURCHASE to listOf(
+                "spent on", "used for", "purchase at", "pos purchase",
+                "recharge", "bill payment", "electricity bill", "utility bill", "internet package"
+            ),
             SmsTxType.WITHDRAWAL to listOf("withdrawn", "atm withdrawal", "cash withdrawal"),
             SmsTxType.DEPOSIT to listOf("deposited", "cash deposit"),
             SmsTxType.FEE to listOf("maintenance fee", "sms fee", "account fee", "charge debited", "fee debited"),
@@ -160,7 +173,10 @@ object BuiltinSmsRules {
         directionKeywords = mapOf(
             SmsTxType.MONEY_SENT to listOf("sent", "paid", "debited", "withdrawn", "transferred"),
             SmsTxType.MONEY_RECEIVED to listOf("received", "credited", "deposited"),
-            SmsTxType.PURCHASE to listOf("spent", "purchase", "bought"),
+            SmsTxType.PURCHASE to listOf(
+                "spent", "purchase", "bought",
+                "recharge", "bill payment", "electricity bill", "utility bill", "internet package"
+            ),
             SmsTxType.REFUND to listOf("refund", "reversed"),
             SmsTxType.FEE to listOf("fee", "charge"),
             SmsTxType.BALANCE_ONLY to listOf("balance is", "current balance", "available balance")

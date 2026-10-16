@@ -3,6 +3,7 @@ package com.kanso.spending.ui
 import android.content.Context
 import com.kanso.spending.data.local.entity.AccountKind
 import com.kanso.spending.data.repository.DetectionApproval
+import com.kanso.spending.data.repository.SmsImportPreview
 import com.kanso.spending.domain.recurring.RecurringCandidate
 import com.kanso.spending.domain.sms.SmsImportMode
 
@@ -28,6 +29,14 @@ data class SmartLedgerActions(
     val onSetSmsEnabled: (Boolean) -> Unit,
     val onSetImportMode: (SmsImportMode) -> Unit,
     val onImportHistory: (context: Context, fromMillis: Long, toMillis: Long) -> Unit,
+    /**
+     * Dry-run a historical import first: writes nothing, reports what would be
+     * recorded / queued / skipped as duplicates. Null result = read failure
+     * (permission denied or no messages) — the reason lands in smart status.
+     */
+    val onPreviewHistory: (context: Context, fromMillis: Long, toMillis: Long, onResult: (SmsImportPreview?) -> Unit) -> Unit,
+    /** Import the range with an explicit one-shot mode (auto-record vs review-first). */
+    val onImportHistoryAs: (context: Context, fromMillis: Long, toMillis: Long, mode: SmsImportMode) -> Unit,
     val onPasteImport: (text: String) -> Unit,
     val onUndoLastImport: () -> Unit,
     val onClearSmsHistory: () -> Unit,

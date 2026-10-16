@@ -61,11 +61,21 @@ data class PlannedSms(
     val detection: PlannedDetection?
 )
 
+/** A skipped duplicate in structured form — message content is never included. */
+data class DuplicateNotice(
+    val provider: String,
+    val amountCents: Long?,
+    val timestampMillis: Long,
+    val referenceId: String?
+)
+
 data class IngestPlan(
     val items: List<PlannedSms>,
     val duplicateCount: Int,
     val ignoredCount: Int,
-    val batchId: String
+    val batchId: String,
+    /** Skipped duplicates (already known fingerprints), for preview/inspection. */
+    val duplicateItems: List<DuplicateNotice> = emptyList()
 ) {
     val pendingCount: Int
         get() = items.count { it.detection?.reviewStatus == "PENDING" }
@@ -89,6 +99,7 @@ object SmsIngestPlanner {
 
     fun plan(messages: List<RawInboundSms>, context: IngestContext): IngestPlan {
         val items = mutableListOf<PlannedSms>()
+        val duplicateItems = mutableListOf<DuplicateNotice>()
         val seen = HashSet<String>(context.knownFingerprints)
         var duplicates = 0
         var ignored = 0
@@ -100,6 +111,12 @@ object SmsIngestPlanner {
                 is SmsParseResult.Ambiguous -> {
                     if (!seen.add(result.fingerprint)) {
                         duplicates++
+                        duplicateItems += DuplicateNotice(
+                            provider = result.provider,
+                            amountCents = null,
+                            timestampMillis = message.receivedAtMillis,
+                            referenceId = null
+                        )
                         continue
                     }
                     val parsed = ParsedSmsTransaction(
@@ -141,6 +158,12 @@ object SmsIngestPlanner {
                     val tx = result.transaction
                     if (!seen.add(tx.fingerprint)) {
                         duplicates++
+                        duplicateItems += DuplicateNotice(
+                            provider = tx.provider,
+                            amountCents = tx.amountCents,
+                            timestampMillis = tx.timestampMillis,
+                            referenceId = tx.referenceId
+                        )
                         continue
                     }
                     items += planFinancial(message, tx, context)
@@ -152,7 +175,8 @@ object SmsIngestPlanner {
             items = items,
             duplicateCount = duplicates,
             ignoredCount = ignored,
-            batchId = context.batchId
+            batchId = context.batchId,
+            duplicateItems = duplicateItems
         )
     }
 

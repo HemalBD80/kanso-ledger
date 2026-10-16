@@ -65,6 +65,16 @@ object SmsFixtures {
     const val CARD_BALANCE_ONLY =
         "Credit Card *7788 Available Limit is BDT 45,000.00. Reply BAL to know more."
 
+    // ---- Recharge, bills & data packages ---------------------------------
+    const val BKASH_RECHARGE =
+        "You have paid BDT 150.00 for your mobile recharge. New Balance BDT 1,050.00. TrxID RC5T6U7V. 16/10/26 10:20"
+
+    const val BANK_ELECTRICITY_BILL =
+        "Electricity bill payment of BDT 1,250.00 from A/c ***4512 on 12/10/26 09:30. Avl Bal BDT 20,000.00. Ref: BILL7712"
+
+    const val GENERIC_INTERNET_PACKAGE =
+        "You have bought an internet package of BDT 349.00. TrxID GP882114. 10/10/26 20:00"
+
     // ---- Ambiguous / unfamiliar ------------------------------------------
     const val AMBIGUOUS_UNFAMILIAR =
         "Money movement of BDT for your transaction has been processed today. Contact branch for detail."
