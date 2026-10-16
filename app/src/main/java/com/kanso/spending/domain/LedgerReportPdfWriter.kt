@@ -107,7 +107,11 @@ object LedgerReportPdfWriter {
         doc.finishPage(page)
 
         val out = ByteArrayOutputStream()
-        doc.use { pdf -> pdf.writeTo(out) }
+        try {
+            doc.writeTo(out)
+        } finally {
+            doc.close()
+        }
         return out.toByteArray()
     }
 

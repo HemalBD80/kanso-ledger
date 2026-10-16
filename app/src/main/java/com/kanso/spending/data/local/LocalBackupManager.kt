@@ -69,7 +69,6 @@ object LocalBackupManager {
                 put("monthKey", catBudget.monthKey)
                 put("categoryId", catBudget.categoryId)
                 put("limitCents", catBudget.limitCents)
-                put("updatedAtMillis", catBudget.updatedAtMillis)
             }
             categoryBudgetsArray.put(item)
         }
@@ -161,8 +160,7 @@ object LocalBackupManager {
             categoryBudgets += CategoryBudgetEntity(
                 monthKey = monthKey,
                 categoryId = categoryId,
-                limitCents = o.optLong("limitCents", 0L),
-                updatedAtMillis = o.optLong("updatedAtMillis", 0L)
+                limitCents = o.optLong("limitCents", 0L)
             )
         }
 

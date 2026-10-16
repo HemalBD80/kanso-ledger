@@ -28,6 +28,8 @@ typealias CategoryDisplayMap = Map<String, CategoryDisplayInfo>
  */
 object SpendingAnalyticsEngine {
 
+    private val dayHeaderFormatter = DateTimeFormatter.ofPattern("EEE, MMM d", Locale.US)
+
     fun computeMonthlyAnalytics(
         yearMonth: YearMonth,
         monthExpenses: List<ExpenseEntity>,
@@ -90,7 +92,7 @@ object SpendingAnalyticsEngine {
         )
 
         val methodBreakdown = monthExpenses
-            .groupBy { PaymentMethod.resolveId(it.paymentMethod) to it.paymentProvider }
+            .groupBy { it.paymentMethod to it.paymentProvider }
             .map { (methodAndProvider, items) ->
                 val (methodIdRaw, provider) = methodAndProvider
                 val method = PaymentMethod.resolveId(methodIdRaw)

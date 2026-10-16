@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import com.kanso.spending.data.local.entity.ExpenseEntity
 import com.kanso.spending.data.model.PaymentMethod
+import com.kanso.spending.domain.CurrencyFormatter
 import com.kanso.spending.domain.LedgerReportPeriod
 import com.kanso.spending.domain.MonthlyLedgerAnalytics
 import com.kanso.spending.ui.LedgerTypeFilter
