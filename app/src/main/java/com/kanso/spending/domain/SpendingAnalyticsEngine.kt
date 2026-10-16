@@ -2,8 +2,8 @@ package com.kanso.spending.domain
 
 import com.kanso.spending.data.local.entity.CategoryBudgetEntity
 import com.kanso.spending.data.local.entity.ExpenseEntity
+import com.kanso.spending.data.local.entity.IncomeEntity
 import com.kanso.spending.data.model.PaymentMethod
-import com.kanso.spending.data.model.SpendingCategory
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
@@ -12,20 +12,36 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
 
-object SpendingAnalyticsEngine {
+/** Display metadata (name, color) resolved for a category id. */
+data class CategoryDisplayInfo(
+    val id: String,
+    val displayName: String,
+    val colorHex: Long
+)
 
-    private val dayHeaderFormatter = DateTimeFormatter.ofPattern("EEE, MMM d", Locale.US)
+/** Map of category id -> display metadata, resolved from the `categories` table. */
+typealias CategoryDisplayMap = Map<String, CategoryDisplayInfo>
+
+/**
+ * All dashboard math in one place. Reads are pure so every figure the UI shows
+ * can be traced straight back to the Room rows and re-verified in tests.
+ */
+object SpendingAnalyticsEngine {
 
     fun computeMonthlyAnalytics(
         yearMonth: YearMonth,
         monthExpenses: List<ExpenseEntity>,
-        filteredExpenses: List<ExpenseEntity>,
+        monthIncomes: List<IncomeEntity>,
+        filteredEntries: List<LedgerDisplayEntry>,
+        categoryDisplayMap: Map<String, CategoryDisplayInfo>,
         monthlyBudgetCents: Long,
         categoryBudgets: List<CategoryBudgetEntity>,
         today: LocalDate = LocalDate.now(),
         zoneId: ZoneId = ZoneId.systemDefault()
     ): MonthlyLedgerAnalytics {
+
         val totalSpent = monthExpenses.sumOf { it.amountCents }
+        val moneyIn = monthIncomes.sumOf { it.amountCents }
         val budget = monthlyBudgetCents.coerceAtLeast(0L)
         val remaining = budget - totalSpent
         val daysInMonth = yearMonth.lengthOfMonth()
@@ -52,18 +68,51 @@ object SpendingAnalyticsEngine {
         }
 
         val catBudgetMap = categoryBudgets.associate { it.categoryId to it.limitCents }
-        val byCategory = monthExpenses.groupBy { SpendingCategory.fromId(it.categoryId) }
-        val categoryBreakdown = SpendingCategory.entries.map { cat ->
-            val items = byCategory[cat].orEmpty()
+        val byCategory = monthExpenses.groupBy { it.categoryId }
+        val breakdownIds = (categoryDisplayMap.keys + byCategory.keys).distinct()
+        val categoryBreakdown = breakdownIds.map { id ->
+            val info = categoryDisplayMap[id]
+                ?: CategoryDisplayInfo(id, id, 0xFF161614)
+            val items = byCategory[id].orEmpty()
             val spent = items.sumOf { it.amountCents }
             CategoryBreakdownItem(
-                category = cat,
+                categoryId = id,
+                displayName = info.displayName,
+                colorHex = info.colorHex,
                 spentCents = spent,
-                budgetLimitCents = catBudgetMap[cat.id],
+                budgetLimitCents = catBudgetMap[id],
                 shareOfTotalSpend = if (totalSpent > 0L) spent.toFloat() / totalSpent.toFloat() else 0f,
                 transactionCount = items.size
             )
-        }.sortedWith(compareByDescending<CategoryBreakdownItem> { it.spentCents }.thenBy { it.category.ordinal })
+        }.sortedWith(
+            compareByDescending<CategoryBreakdownItem> { it.spentCents }
+                .thenBy { it.displayName }
+        )
+
+        val methodBreakdown = monthExpenses
+            .groupBy { PaymentMethod.resolveId(it.paymentMethod) to it.paymentProvider }
+            .map { (methodAndProvider, items) ->
+                val (methodIdRaw, provider) = methodAndProvider
+                val method = PaymentMethod.resolveId(methodIdRaw)
+                MethodBreakdownItem(
+                    methodId = method.id,
+                    label = method.label,
+                    provider = provider,
+                    spentCents = items.sumOf { it.amountCents },
+                    transactionCount = items.size
+                )
+            }
+            .groupBy { it.methodId }
+            .map { (_, items) ->
+                items.reduce { acc, item ->
+                    acc.copy(
+                        provider = acc.provider.ifBlank { item.provider },
+                        spentCents = acc.spentCents + item.spentCents,
+                        transactionCount = acc.transactionCount + item.transactionCount
+                    )
+                }
+            }
+            .sortedByDescending { it.spentCents }
 
         val spendByDay = monthExpenses.groupBy {
             Instant.ofEpochMilli(it.timestampEpochMillis).atZone(zoneId).toLocalDate().dayOfMonth
@@ -73,9 +122,10 @@ object SpendingAnalyticsEngine {
             DailyBarPoint(date, day, spendByDay[day].orEmpty().sumOf { it.amountCents }, date == today)
         }
 
-        val daySections = filteredExpenses
-            .sortedWith(compareByDescending<ExpenseEntity> { it.timestampEpochMillis }.thenByDescending { it.id })
-            .groupBy { Instant.ofEpochMilli(it.timestampEpochMillis).atZone(zoneId).toLocalDate() }
+        val daySections = filteredEntries
+            .groupBy {
+                Instant.ofEpochMilli(it.timestampEpochMillis).atZone(zoneId).toLocalDate()
+            }
             .entries.sortedByDescending { it.key }
             .map { (date, list) ->
                 val prefix = when (date) {
@@ -86,8 +136,12 @@ object SpendingAnalyticsEngine {
                 DayLedgerSection(
                     date = date,
                     headerTitle = "$prefix${date.format(dayHeaderFormatter).uppercase(Locale.US)}",
-                    dayTotalCents = list.sumOf { it.amountCents },
-                    entries = list
+                    outflowTotalCents = list.filter { !it.isIncome }.sumOf { it.amountCents },
+                    inflowTotalCents = list.filter { it.isIncome }.sumOf { it.amountCents },
+                    entries = list.sortedWith(
+                        compareByDescending<LedgerDisplayEntry> { it.timestampEpochMillis }
+                            .thenByDescending { it.recordId }
+                    )
                 )
             }
 
@@ -98,8 +152,8 @@ object SpendingAnalyticsEngine {
             .map {
                 MerchantQuickSuggestion(
                     title = it.title,
-                    category = SpendingCategory.fromId(it.categoryId),
-                    paymentMethod = PaymentMethod.fromId(it.paymentMethod),
+                    categoryId = it.categoryId,
+                    paymentMethod = PaymentMethod.resolveId(it.paymentMethod),
                     lastAmountCents = it.amountCents
                 )
             }
@@ -107,6 +161,7 @@ object SpendingAnalyticsEngine {
         return MonthlyLedgerAnalytics(
             yearMonth = yearMonth,
             totalSpentCents = totalSpent,
+            moneyInCents = moneyIn,
             monthlyBudgetCents = budget,
             remainingBudgetCents = remaining,
             dailySafeToSpendCents = if (remaining > 0L) remaining / remainingDays else 0L,
@@ -118,6 +173,7 @@ object SpendingAnalyticsEngine {
             pacingDeltaPercent = pacingDelta,
             recurringSpentCents = monthExpenses.filter { it.isRecurring }.sumOf { it.amountCents },
             categoryBreakdown = categoryBreakdown,
+            methodBreakdown = methodBreakdown,
             dailyBars = dailyBars,
             daySections = daySections,
             merchantSuggestions = suggestions

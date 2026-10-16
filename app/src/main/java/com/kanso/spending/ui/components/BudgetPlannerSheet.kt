@@ -17,30 +17,30 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.kanso.spending.data.model.SpendingCategory
-import com.kanso.spending.domain.CategoryBreakdownItem
+import com.kanso.spending.data.local.entity.CategoryEntity
 import com.kanso.spending.ui.theme.LocalKansoColors
 import kotlin.math.roundToLong
 
-private val CURRENCIES = listOf("\u09F3", "$", "€", "£", "₹", "¥", "₩")
+private val CURRENCIES = listOf("৳", "$", "€", "£", "₹", "¥", "₩")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BudgetPlannerSheet(
     currentMonthlyBudgetCents: Long,
-    categoryBreakdown: List<CategoryBreakdownItem>,
+    categoryBreakdown: List<com.kanso.spending.domain.CategoryBreakdownItem>,
+    categories: List<CategoryEntity>,
     currencySymbol: String,
-    onSaveConfiguration: (Long, String, Map<SpendingCategory, Long>) -> Unit,
+    onSaveConfiguration: (Long, String, Map<String, Long>) -> Unit,
     onDismiss: () -> Unit
 ) {
     val colors = LocalKansoColors.current
     var selectedCurrency by remember(currencySymbol) { mutableStateOf(currencySymbol) }
     var overallText by remember(currentMonthlyBudgetCents) { mutableStateOf((currentMonthlyBudgetCents / 100L).toString()) }
-    val catInputs = remember(categoryBreakdown) {
-        mutableStateMapOf<SpendingCategory, String>().apply {
-            SpendingCategory.entries.forEach { cat ->
-                val lim = categoryBreakdown.firstOrNull { it.category == cat }?.budgetLimitCents
-                put(cat, if (lim != null && lim > 0L) (lim / 100L).toString() else "")
+    val catInputs = remember(categoryBreakdown, categories) {
+        mutableStateMapOf<String, String>().apply {
+            categories.forEach { cat ->
+                val lim = categoryBreakdown.firstOrNull { it.categoryId == cat.id }?.budgetLimitCents
+                put(cat.id, if (lim != null && lim > 0L) (lim / 100L).toString() else "")
             }
         }
     }
@@ -83,20 +83,20 @@ fun BudgetPlannerSheet(
             Text("CATEGORY CAPS (OPTIONAL)", style = MaterialTheme.typography.labelSmall, color = colors.inkMuted)
             Spacer(Modifier.height(8.dp))
 
-            SpendingCategory.entries.forEach { cat ->
+            categories.forEach { cat ->
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                        Box(Modifier.size(10.dp).clip(CircleShape).background(Color(cat.accentHex)))
+                        Box(Modifier.size(10.dp).clip(CircleShape).background(Color(cat.colorHex)))
                         Spacer(Modifier.width(10.dp))
                         Text(cat.displayName, style = MaterialTheme.typography.bodyLarge, color = colors.inkPrimary)
                     }
                     OutlinedTextField(
-                        value = catInputs[cat].orEmpty(),
-                        onValueChange = { v -> catInputs[cat] = v.filter { ch -> ch.isDigit() || ch == '.' } },
+                        value = catInputs[cat.id].orEmpty(),
+                        onValueChange = { v -> catInputs[cat.id] = v.filter { ch -> ch.isDigit() || ch == '.' } },
                         placeholder = { Text("No cap") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
@@ -108,6 +108,7 @@ fun BudgetPlannerSheet(
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
+                    // Testing discipline: an empty field saves 0.00 — no hidden default.
                     val overall = ((overallText.toDoubleOrNull() ?: 0.0) * 100.0).roundToLong().coerceAtLeast(0L)
                     val map = catInputs.mapValues { (_, t) -> ((t.toDoubleOrNull() ?: 0.0) * 100.0).roundToLong().coerceAtLeast(0L) }
                     onSaveConfiguration(overall, selectedCurrency, map)

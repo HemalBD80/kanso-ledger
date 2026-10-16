@@ -21,6 +21,7 @@ import com.kanso.spending.ui.theme.LocalKansoColors
 fun LocalVaultSheet(
     backupJsonPreview: String,
     statusMessage: String?,
+    auditLines: List<String> = emptyList(),
     onGenerateBackupJson: () -> Unit,
     onImportBackupJson: (String) -> Unit,
     onWipeAllLocalData: () -> Unit,
@@ -97,6 +98,39 @@ fun LocalVaultSheet(
                 colors = ButtonDefaults.buttonColors(containerColor = colors.inkPrimary, contentColor = colors.surface)
             ) {
                 Text("RESTORE SNAPSHOT INTO LOCAL DB", style = MaterialTheme.typography.labelSmall)
+            }
+
+            Spacer(Modifier.height(14.dp))
+
+            if (auditLines.isNotEmpty()) {
+                Text("RECENT CORRECTIONS & AUDIT TRAIL", style = MaterialTheme.typography.labelSmall, color = colors.inkMuted)
+                Spacer(Modifier.height(6.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(colors.elevatedSurface)
+                        .border(1.dp, colors.hairlineBorder, RoundedCornerShape(10.dp))
+                        .padding(10.dp)
+                ) {
+                    Column {
+                        auditLines.take(12).forEach { line ->
+                            Text(
+                                text = line,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.inkSecondary,
+                                modifier = Modifier.padding(vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "Why did my balance change? This local trail records every added, edited, or deleted transaction and category.",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontStyle = FontStyle.Italic,
+                    color = colors.inkMuted
+                )
             }
 
             Spacer(Modifier.height(14.dp))

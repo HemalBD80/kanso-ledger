@@ -14,9 +14,9 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.kanso.spending.data.local.entity.CategoryEntity
 import com.kanso.spending.data.local.entity.ExpenseEntity
 import com.kanso.spending.data.model.PaymentMethod
-import com.kanso.spending.data.model.SpendingCategory
 import com.kanso.spending.domain.CurrencyFormatter
 import com.kanso.spending.domain.KeypadExpressionEvaluator
 import com.kanso.spending.ui.theme.LocalKansoColors
@@ -32,14 +32,16 @@ private val KEYPAD_ROWS = listOf(
 @Composable
 fun TactileExpenseSheet(
     editingExpense: ExpenseEntity?,
+    categories: List<CategoryEntity>,
     currencySymbol: String,
     merchantSuggestions: List<String>,
     onSaveExpense: (
         existingId: Long?,
         title: String,
         amountCents: Long,
-        category: SpendingCategory,
+        categoryId: String,
         paymentMethod: PaymentMethod,
+        paymentProvider: String,
         timestampMillis: Long,
         note: String,
         isRecurring: Boolean
@@ -48,6 +50,7 @@ fun TactileExpenseSheet(
 ) {
     val colors = LocalKansoColors.current
     val haptics = LocalHapticFeedback.current
+    val categoryOptions = categories.ifEmpty { listOf(CategoryEntity(id = "other", displayName = "Other")) }
 
     var expression by remember(editingExpense) {
         mutableStateOf(
@@ -59,16 +62,27 @@ fun TactileExpenseSheet(
     }
     var title by remember(editingExpense) { mutableStateOf(editingExpense?.title ?: "") }
     var note by remember(editingExpense) { mutableStateOf(editingExpense?.note ?: "") }
-    var selectedCategory by remember(editingExpense) {
-        mutableStateOf(editingExpense?.let { SpendingCategory.fromId(it.categoryId) } ?: SpendingCategory.DINING)
+    var selectedCategoryId by remember(editingExpense, categoryOptions) {
+        val initial = editingExpense?.categoryId
+        mutableStateOf(
+            if (initial != null && categoryOptions.any { it.id == initial }) initial
+            else categoryOptions.first().id
+        )
     }
     var selectedPayment by remember(editingExpense) {
-        mutableStateOf(editingExpense?.let { PaymentMethod.fromId(it.paymentMethod) } ?: PaymentMethod.CARD)
+        mutableStateOf(editingExpense?.let { PaymentMethod.resolveId(it.paymentMethod) } ?: PaymentMethod.CASH)
+    }
+    var provider by remember(editingExpense) {
+        mutableStateOf(editingExpense?.paymentProvider.orEmpty())
     }
     var isRecurring by remember(editingExpense) { mutableStateOf(editingExpense?.isRecurring ?: false) }
 
     val evaluatedCents = remember(expression) { KeypadExpressionEvaluator.evaluateToCents(expression) }
     val hasOperator = remember(expression) { KeypadExpressionEvaluator.containsOperator(expression) }
+    val selectedCategory = categoryOptions.first { it.id == selectedCategoryId }
+    val showProviderField = selectedPayment in listOf(
+        PaymentMethod.MOBILE_WALLET, PaymentMethod.BANK_TRANSFER, PaymentMethod.OTHER
+    )
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = colors.surface, contentColor = colors.inkPrimary) {
         Column(
@@ -144,21 +158,21 @@ fun TactileExpenseSheet(
 
             Spacer(Modifier.height(10.dp))
 
-            // Category Selector Strip
+            // Category Selector Strip (defaults + custom categories)
             Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                SpendingCategory.entries.forEach { cat ->
-                    val sel = selectedCategory == cat
-                    val c = Color(cat.accentHex)
+                categoryOptions.forEach { cat ->
+                    val sel = selectedCategoryId == cat.id
+                    val c = Color(cat.colorHex)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .clip(RoundedCornerShape(10.dp))
                             .background(if (sel) c.copy(alpha = 0.18f) else colors.elevatedSurface)
                             .border(1.dp, if (sel) c else colors.hairlineBorder, RoundedCornerShape(10.dp))
-                            .clickable { selectedCategory = cat }
+                            .clickable { selectedCategoryId = cat.id }
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Box(Modifier.size(8.dp).clip(CircleShape).background(c))
@@ -171,32 +185,51 @@ fun TactileExpenseSheet(
             Spacer(Modifier.height(10.dp))
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    PaymentMethod.entries.forEach { m ->
-                        val active = selectedPayment == m
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (active) colors.inkPrimary else colors.elevatedSurface)
-                                .border(1.dp, colors.hairlineBorder, RoundedCornerShape(8.dp))
-                                .clickable { selectedPayment = m }
-                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Text(m.badgeCode, style = MaterialTheme.typography.labelSmall, color = if (active) colors.surface else colors.inkSecondary)
-                        }
+                PaymentMethod.entries.forEach { m ->
+                    val active = selectedPayment == m
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (active) colors.inkPrimary else colors.elevatedSurface)
+                            .border(1.dp, colors.hairlineBorder, RoundedCornerShape(8.dp))
+                            .clickable { selectedPayment = m }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(m.label, style = MaterialTheme.typography.labelSmall, color = if (active) colors.surface else colors.inkSecondary)
                     }
                 }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { isRecurring = !isRecurring }.padding(horizontal = 4.dp)
-                ) {
-                    Checkbox(checked = isRecurring, onCheckedChange = { isRecurring = it })
-                    Text("Recurring", style = MaterialTheme.typography.labelSmall, color = colors.inkSecondary)
-                }
+            }
+
+            if (showProviderField) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = provider,
+                    onValueChange = { provider = it },
+                    label = {
+                        Text(
+                            when (selectedPayment) {
+                                PaymentMethod.MOBILE_WALLET -> "Wallet Name (bKash / Nagad / Rocket)"
+                                PaymentMethod.BANK_TRANSFER -> "Bank Name"
+                                else -> "Payment Provider (Any custom method)"
+                            }
+                        )
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { isRecurring = !isRecurring }.padding(horizontal = 4.dp)
+            ) {
+                Checkbox(checked = isRecurring, onCheckedChange = { isRecurring = it })
+                Text("Recurring", style = MaterialTheme.typography.labelSmall, color = colors.inkSecondary)
             }
 
             OutlinedTextField(
@@ -253,8 +286,9 @@ fun TactileExpenseSheet(
                         editingExpense?.id,
                         title.ifBlank { selectedCategory.displayName },
                         finalCents,
-                        selectedCategory,
+                        selectedCategoryId,
                         selectedPayment,
+                        provider,
                         editingExpense?.timestampEpochMillis ?: System.currentTimeMillis(),
                         note,
                         isRecurring

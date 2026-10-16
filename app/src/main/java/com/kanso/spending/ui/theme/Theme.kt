@@ -23,7 +23,9 @@ data class KansoExtendedColors(
     val inkMuted: Color,
     val positiveAccent: Color,
     val warningAccent: Color,
-    val alertAccent: Color
+    val alertAccent: Color,
+    val fjordAccent: Color,
+    val ochreAccent: Color
 )
 
 val LocalKansoColors = staticCompositionLocalOf {
@@ -38,7 +40,9 @@ val LocalKansoColors = staticCompositionLocalOf {
         inkMuted = KansoPalette.InkMuted,
         positiveAccent = KansoPalette.BotanicalPine,
         warningAccent = KansoPalette.OchreWarning,
-        alertAccent = KansoPalette.TerracottaAlert
+        alertAccent = KansoPalette.TerracottaAlert,
+        fjordAccent = KansoPalette.FjordSlate,
+        ochreAccent = KansoPalette.OchreWarning
     )
 }
 
@@ -108,7 +112,9 @@ fun KansoSpendingTheme(
             inkMuted = KansoPalette.ChalkMuted,
             positiveAccent = KansoPalette.BotanicalSage,
             warningAccent = KansoPalette.OchreWarning,
-            alertAccent = KansoPalette.CoralEmber
+            alertAccent = KansoPalette.CoralEmber,
+            fjordAccent = KansoPalette.FjordSlate,
+            ochreAccent = KansoPalette.OchreWarning
         )
     } else {
         KansoExtendedColors(
@@ -122,7 +128,9 @@ fun KansoSpendingTheme(
             inkMuted = KansoPalette.InkMuted,
             positiveAccent = KansoPalette.BotanicalPine,
             warningAccent = KansoPalette.OchreWarning,
-            alertAccent = KansoPalette.TerracottaAlert
+            alertAccent = KansoPalette.TerracottaAlert,
+            fjordAccent = KansoPalette.FjordSlate,
+            ochreAccent = KansoPalette.OchreWarning
         )
     }
 

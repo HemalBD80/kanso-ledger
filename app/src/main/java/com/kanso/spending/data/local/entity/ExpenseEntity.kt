@@ -34,6 +34,10 @@ data class ExpenseEntity(
     @ColumnInfo(name = "payment_method")
     val paymentMethod: String,
 
+    /** Optional wallet / provider name, e.g. "bKash" ("Nagad" / "Rocket" etc.). */
+    @ColumnInfo(name = "payment_provider", defaultValue = "")
+    val paymentProvider: String = "",
+
     @ColumnInfo(name = "timestamp_epoch_millis")
     val timestampEpochMillis: Long,
 

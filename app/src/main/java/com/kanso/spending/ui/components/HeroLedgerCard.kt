@@ -12,7 +12,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.kanso.spending.data.model.SpendingCategory
 import com.kanso.spending.domain.BudgetPacingStatus
 import com.kanso.spending.domain.CurrencyFormatter
 import com.kanso.spending.domain.MonthlyLedgerAnalytics
@@ -24,8 +23,8 @@ import kotlin.math.roundToInt
 fun HeroLedgerCard(
     analytics: MonthlyLedgerAnalytics,
     currencySymbol: String,
-    selectedCategory: SpendingCategory?,
-    onSelectCategory: (SpendingCategory?) -> Unit,
+    selectedCategory: String?,
+    onSelectCategory: (String?) -> Unit,
     onEditBudgetClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -83,14 +82,14 @@ fun HeroLedgerCard(
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     active.forEach { item ->
-                        val c = Color(item.category.accentHex)
-                        val dim = selectedCategory != null && selectedCategory != item.category
+                        val c = Color(item.colorHex)
+                        val dim = selectedCategory != null && selectedCategory != item.categoryId
                         Box(
                             modifier = Modifier
                                 .weight(item.shareOfTotalSpend.coerceAtLeast(0.03f))
                                 .fillMaxHeight()
                                 .background(if (dim) c.copy(alpha = 0.28f) else c)
-                                .clickable { onSelectCategory(if (selectedCategory == item.category) null else item.category) }
+                                .clickable { onSelectCategory(if (selectedCategory == item.categoryId) null else item.categoryId) }
                         )
                     }
                 }
@@ -101,8 +100,8 @@ fun HeroLedgerCard(
             Spacer(Modifier.height(12.dp))
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 active.forEach { item ->
-                    val sel = selectedCategory == item.category
-                    val c = Color(item.category.accentHex)
+                    val sel = selectedCategory == item.categoryId
+                    val c = Color(item.colorHex)
                     val pct = (item.shareOfTotalSpend * 100f).roundToInt()
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -110,12 +109,12 @@ fun HeroLedgerCard(
                             .clip(RoundedCornerShape(8.dp))
                             .background(if (sel) c.copy(alpha = 0.16f) else colors.elevatedSurface)
                             .border(1.dp, if (sel) c else colors.hairlineBorder, RoundedCornerShape(8.dp))
-                            .clickable { onSelectCategory(if (sel) null else item.category) }
+                            .clickable { onSelectCategory(if (sel) null else item.categoryId) }
                             .padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         Box(Modifier.size(8.dp).clip(CircleShape).background(c))
                         Spacer(Modifier.width(6.dp))
-                        Text("${item.category.shortCode} $pct%", style = MaterialTheme.typography.labelSmall, color = colors.inkPrimary)
+                        Text("${item.displayName.uppercase()} $pct%", style = MaterialTheme.typography.labelSmall, color = colors.inkPrimary)
                     }
                 }
             }
