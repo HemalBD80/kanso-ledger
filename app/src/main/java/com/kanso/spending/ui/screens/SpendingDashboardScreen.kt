@@ -9,11 +9,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AccountBalance
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Category
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.outlined.Message
+import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SouthWest
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,6 +37,8 @@ import com.kanso.spending.domain.LedgerReportPeriod
 import com.kanso.spending.domain.MonthlyLedgerAnalytics
 import com.kanso.spending.ui.LedgerTypeFilter
 import com.kanso.spending.ui.ReportFormat
+import com.kanso.spending.ui.SmartLedgerActions
+import com.kanso.spending.ui.SmartLedgerUiState
 import com.kanso.spending.ui.SpendingDashboardUiState
 import com.kanso.spending.ui.components.*
 import com.kanso.spending.ui.theme.LocalKansoColors
@@ -38,6 +47,8 @@ import java.time.LocalDate
 @Composable
 fun SpendingDashboardScreen(
     uiState: SpendingDashboardUiState,
+    smartState: SmartLedgerUiState,
+    smartActions: SmartLedgerActions,
     onPreviousMonth: () -> Unit,
     onNextMonth: () -> Unit,
     onSelectCategoryFilter: (String?) -> Unit,
@@ -69,6 +80,13 @@ fun SpendingDashboardScreen(
     var showMoneyInSheet by remember { mutableStateOf(false) }
     var showCategorySheet by remember { mutableStateOf(false) }
     var showReportSheet by remember { mutableStateOf(false) }
+    var showSmartSmsSheet by remember { mutableStateOf(false) }
+    var showAccountsSheet by remember { mutableStateOf(false) }
+    var showCalendarSheet by remember { mutableStateOf(false) }
+    var showRecurringSheet by remember { mutableStateOf(false) }
+    var showGoalsSheet by remember { mutableStateOf(false) }
+    var showQuickEntrySheet by remember { mutableStateOf(false) }
+    var showSmartSettingsSheet by remember { mutableStateOf(false) }
 
     // ---------------------------------------------------- SAF report saving
     val pdfLauncher = rememberLauncherForActivityResult(
@@ -153,6 +171,30 @@ fun SpendingDashboardScreen(
                     },
                     onManageCategories = { showCategorySheet = true },
                     onDownloadReport = { showReportSheet = true }
+                )
+                Spacer(Modifier.height(14.dp))
+            }
+
+            item {
+                IntelligenceSection(
+                    smartState = smartState,
+                    currencySymbol = uiState.currencySymbol,
+                    onOpenReview = { showSmartSmsSheet = true },
+                    onOpenAccounts = { showAccountsSheet = true }
+                )
+                Spacer(Modifier.height(14.dp))
+            }
+
+            item {
+                SmartActionRow(
+                    smartState = smartState,
+                    onOpenSms = { showSmartSmsSheet = true },
+                    onOpenAccounts = { showAccountsSheet = true },
+                    onOpenCalendar = { showCalendarSheet = true },
+                    onOpenRecurring = { showRecurringSheet = true },
+                    onOpenGoals = { showGoalsSheet = true },
+                    onOpenQuickEntry = { showQuickEntrySheet = true },
+                    onOpenSettings = { showSmartSettingsSheet = true }
                 )
                 Spacer(Modifier.height(14.dp))
             }
@@ -303,6 +345,85 @@ fun SpendingDashboardScreen(
             }
         )
     }
+
+    if (showSmartSmsSheet) {
+        SmartSmsSheet(
+            uiState = uiState,
+            smartState = smartState,
+            categories = uiState.categoryList,
+            actions = smartActions,
+            onDismiss = {
+                showSmartSmsSheet = false
+                smartActions.onClearSmartStatus()
+            }
+        )
+    }
+
+    if (showAccountsSheet) {
+        AccountsSheet(
+            smartState = smartState,
+            currencySymbol = uiState.currencySymbol,
+            actions = smartActions,
+            onDismiss = {
+                showAccountsSheet = false
+                smartActions.onClearSmartStatus()
+            }
+        )
+    }
+
+    if (showCalendarSheet) {
+        CalendarSheet(
+            smartState = smartState,
+            currencySymbol = uiState.currencySymbol,
+            month = uiState.selectedMonth,
+            onDismiss = { showCalendarSheet = false }
+        )
+    }
+
+    if (showRecurringSheet) {
+        RecurringSheet(
+            smartState = smartState,
+            categories = uiState.categoryList,
+            currencySymbol = uiState.currencySymbol,
+            actions = smartActions,
+            onDismiss = {
+                showRecurringSheet = false
+                smartActions.onClearSmartStatus()
+            }
+        )
+    }
+
+    if (showGoalsSheet) {
+        GoalsSheet(
+            smartState = smartState,
+            currencySymbol = uiState.currencySymbol,
+            actions = smartActions,
+            onDismiss = {
+                showGoalsSheet = false
+                smartActions.onClearSmartStatus()
+            }
+        )
+    }
+
+    if (showQuickEntrySheet) {
+        QuickEntrySheet(
+            uiState = uiState,
+            categories = uiState.categoryList,
+            onSaveExpense = onSaveExpense,
+            onDismiss = { showQuickEntrySheet = false }
+        )
+    }
+
+    if (showSmartSettingsSheet) {
+        SmartSettingsSheet(
+            smartState = smartState,
+            actions = smartActions,
+            onDismiss = {
+                showSmartSettingsSheet = false
+                smartActions.onClearSmartStatus()
+            }
+        )
+    }
 }
 
 @Composable
@@ -343,6 +464,186 @@ private fun ActionButton(label: String, icon: androidx.compose.ui.graphics.vecto
         Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(14.dp))
         Spacer(Modifier.width(6.dp))
         Text(label, style = MaterialTheme.typography.labelMedium, color = colors.inkPrimary)
+    }
+}
+
+/**
+ * Net funds across accounts plus the two honesty signals: unreviewed
+ * detections (counted, not money) and provider reconciliation warnings
+ * (never silently applied). Followed by data-only observations.
+ */
+@Composable
+private fun IntelligenceSection(
+    smartState: SmartLedgerUiState,
+    currencySymbol: String,
+    onOpenReview: () -> Unit,
+    onOpenAccounts: () -> Unit
+) {
+    val colors = LocalKansoColors.current
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            color = colors.surface,
+            border = BorderStroke(1.dp, colors.hairlineBorder)
+        ) {
+            Column(Modifier.padding(18.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("NET FUNDS • ALL ACCOUNTS", style = MaterialTheme.typography.labelSmall, color = colors.inkSecondary)
+                    if (smartState.pendingDetections.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.warningAccent.copy(alpha = 0.16f))
+                                .clickable(onClick = onOpenReview)
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                "${smartState.pendingDetections.size} TO REVIEW",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.warningAccent,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    com.kanso.spending.domain.CurrencyFormatter.formatCents(smartState.netWorthCents, currencySymbol),
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = if (smartState.netWorthCents < 0L) colors.alertAccent else colors.inkPrimary
+                )
+
+                if (smartState.accountStates.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        smartState.accountStates.filter { !it.isArchived }.forEach { state ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(colors.background)
+                                    .border(1.dp, colors.hairlineBorder, RoundedCornerShape(8.dp))
+                                    .clickable(onClick = onOpenAccounts)
+                                    .padding(horizontal = 8.dp, vertical = 5.dp)
+                            ) {
+                                Text(
+                                    "${state.name} ${com.kanso.spending.domain.CurrencyFormatter.formatCentsCompact(state.calculatedBalanceCents, currencySymbol)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.inkSecondary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (smartState.reconciliationWarningCount > 0) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(colors.warningAccent.copy(alpha = 0.12f))
+                            .clickable(onClick = onOpenAccounts)
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "⚠ ${smartState.reconciliationWarningCount} account(s) differ from provider reports — " +
+                                "tap to review. Your ledger values were not overwritten.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.warningAccent
+                        )
+                    }
+                }
+            }
+        }
+
+        // ---- data-only observations
+        val visibleInsights = smartState.insights.take(3)
+        if (visibleInsights.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                color = colors.surface,
+                border = BorderStroke(1.dp, colors.hairlineBorder)
+            ) {
+                Column(Modifier.padding(18.dp)) {
+                    Text(
+                        "OBSERVATIONS • FROM YOUR LEDGER ONLY",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.fjordAccent
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    visibleInsights.forEach { insight ->
+                        val accent = when (insight.severity) {
+                            com.kanso.spending.domain.insights.InsightSeverity.GOOD -> colors.positiveAccent
+                            com.kanso.spending.domain.insights.InsightSeverity.WARNING -> colors.warningAccent
+                            com.kanso.spending.domain.insights.InsightSeverity.INFO -> colors.fjordAccent
+                        }
+                        Row(Modifier.padding(vertical = 3.dp)) {
+                            Text("· ", style = MaterialTheme.typography.bodySmall, color = accent)
+                            Text(
+                                text = insight.text + if (insight.isEstimate) " (estimate)" else "",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.inkSecondary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Observations compare figures you recorded — no predictions are counted as spending.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.inkMuted
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Entry points for every v2.0 feature, in one scrollable row. */
+@Composable
+private fun SmartActionRow(
+    smartState: SmartLedgerUiState,
+    onOpenSms: () -> Unit,
+    onOpenAccounts: () -> Unit,
+    onOpenCalendar: () -> Unit,
+    onOpenRecurring: () -> Unit,
+    onOpenGoals: () -> Unit,
+    onOpenQuickEntry: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    val colors = LocalKansoColors.current
+    val pending = smartState.pendingDetections.size
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Text("INTELLIGENCE", style = MaterialTheme.typography.labelSmall, color = colors.inkMuted)
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ActionButton(
+                if (pending > 0) "SMART SMS · $pending" else "SMART SMS",
+                Icons.Outlined.Message, colors.positiveAccent, onOpenSms
+            )
+            ActionButton("ACCOUNTS", Icons.Outlined.AccountBalance, colors.fjordAccent, onOpenAccounts)
+            ActionButton("CALENDAR", Icons.Outlined.CalendarMonth, colors.ochreAccent, onOpenCalendar)
+            ActionButton("RECURRING", Icons.Outlined.Repeat, colors.warningAccent, onOpenRecurring)
+            ActionButton("GOALS", Icons.Outlined.Flag, colors.positiveAccent, onOpenGoals)
+            ActionButton("QUICK ENTRY", Icons.Outlined.Bolt, colors.fjordAccent, onOpenQuickEntry)
+            ActionButton("SMART SETTINGS", Icons.Outlined.Tune, colors.ochreAccent, onOpenSettings)
+        }
     }
 }
 

@@ -2,6 +2,8 @@ package com.kanso.spending.domain
 
 import com.kanso.spending.data.local.entity.ExpenseEntity
 import com.kanso.spending.data.local.entity.IncomeEntity
+import com.kanso.spending.data.local.entity.SmsDetectionEntity
+import com.kanso.spending.data.local.entity.TransferEntity
 import com.kanso.spending.data.model.PaymentMethod
 import java.time.DayOfWeek
 import java.time.Instant
@@ -95,13 +97,42 @@ data class LedgerReportLine(
     val provider: String,
     val amountCents: Long,
     /** Running balance of Money In (−) Expenses accumulated up to and including this row. */
-    val runningBalanceCents: Long
+    val runningBalanceCents: Long,
+    /** Fee bundled with this expense row (zero for money-in rows). */
+    val feeCents: Long = 0L,
+    /** "SMS" or "Manual" — where the record came from. */
+    val sourceTag: String = ""
 )
 
 data class LedgerReportBreakdownRow(
     val label: String,
     val spentCents: Long,
     val transactionCount: Int
+)
+
+/** One account's balance as shown in a report (current, labelled as such). */
+data class ReportAccountBalance(
+    val name: String,
+    val typeLabel: String,
+    val balanceCents: Long
+)
+
+/** Unresolved provider-vs-ledger difference (never applied silently). */
+data class ReportReconciliationWarning(
+    val name: String,
+    val reportedCents: Long,
+    val ledgerCents: Long,
+    val differenceCents: Long
+)
+
+/** One transfer inside the range — money movement, not income or expense. */
+data class ReportTransferLine(
+    val timestampEpochMillis: Long,
+    val fromName: String,
+    val toName: String,
+    val amountCents: Long,
+    val feeCents: Long,
+    val note: String
 )
 
 data class LedgerReportData(
@@ -114,7 +145,24 @@ data class LedgerReportData(
     val transactionCount: Int,
     val lines: List<LedgerReportLine>,
     val categoryBreakdown: List<LedgerReportBreakdownRow>,
-    val methodBreakdown: List<LedgerReportBreakdownRow>
+    val methodBreakdown: List<LedgerReportBreakdownRow>,
+    /** Fees debited in the range (real money out, reported separately). */
+    val feesCents: Long = 0L,
+    /** Subset of money-in that came back as refunds. */
+    val refundsCents: Long = 0L,
+    /** Transfer volume in the range — excluded from income/expense by design. */
+    val transfersCents: Long = 0L,
+    /** Fees charged on those transfers (debited from balances). */
+    val transferFeesCents: Long = 0L,
+    val transfers: List<ReportTransferLine> = emptyList(),
+    val smsRowCount: Int = 0,
+    val manualRowCount: Int = 0,
+    /** Unreviewed detections inside the range — counted, never money. */
+    val pendingCount: Int = 0,
+    val pendingAmountCents: Long = 0L,
+    /** Current per-account balances at generation time (labelled in output). */
+    val accountBalances: List<ReportAccountBalance> = emptyList(),
+    val reconciliationWarnings: List<ReportReconciliationWarning> = emptyList()
 )
 
 /**
@@ -134,14 +182,22 @@ object LedgerReportBuilder {
         allIncomes: List<IncomeEntity>,
         zone: ZoneId,
         categoryLabel: (String) -> String = { it },
-        methodLabel: (String) -> String = { PaymentMethod.resolveId(it).label }
+        methodLabel: (String) -> String = { PaymentMethod.resolveId(it).label },
+        transfers: List<TransferEntity> = emptyList(),
+        pendingDetections: List<SmsDetectionEntity> = emptyList(),
+        accountName: (String) -> String = { it },
+        accountBalances: List<ReportAccountBalance> = emptyList(),
+        reconciliationWarnings: List<ReportReconciliationWarning> = emptyList()
     ): LedgerReportData {
         val startMillis = range.startMillis(zone)
         val endMillis = range.endMillisExclusive(zone)
 
         val beforeExpenses = allExpenses.filter { it.timestampEpochMillis < startMillis }
         val beforeIncomes = allIncomes.filter { it.timestampEpochMillis < startMillis }
-        val opening = balanceCents(beforeIncomes, beforeExpenses)
+        // Transfer fees before the range already left the pot; include them so
+        // the opening figure agrees with the closing one across transfers.
+        val opening = balanceCents(beforeIncomes, beforeExpenses) -
+            transfers.filter { it.timestampEpochMillis < startMillis }.sumOf { it.feeCents }
 
         val inRangeExpenses = allExpenses.filter {
             it.timestampEpochMillis in startMillis until endMillis
@@ -158,7 +214,9 @@ object LedgerReportBuilder {
             val description: String,
             val methodLabel: String,
             val provider: String,
-            val amountCents: Long
+            val amountCents: Long,
+            val feeCents: Long,
+            val sourceTag: String
         )
 
         val merged = buildList {
@@ -172,7 +230,9 @@ object LedgerReportBuilder {
                         description = e.title,
                         methodLabel = methodLabel(e.paymentMethod),
                         provider = e.paymentProvider,
-                        amountCents = e.amountCents
+                        amountCents = e.amountCents,
+                        feeCents = e.feeCents,
+                        sourceTag = e.source
                     )
                 )
             }
@@ -186,7 +246,9 @@ object LedgerReportBuilder {
                         description = i.title,
                         methodLabel = methodLabel(i.paymentMethod),
                         provider = i.paymentProvider,
-                        amountCents = i.amountCents
+                        amountCents = i.amountCents,
+                        feeCents = 0L,
+                        sourceTag = i.source
                     )
                 )
             }
@@ -194,7 +256,13 @@ object LedgerReportBuilder {
 
         var running = opening
         val lines = merged.map { row ->
-            running = if (row.isIncome) running + row.amountCents else running - row.amountCents
+            // Fees are debits too: the running balance subtracts principal + fee,
+            // while expensesCents keeps them separable in the totals.
+            running = if (row.isIncome) {
+                running + row.amountCents
+            } else {
+                running - (row.amountCents + row.feeCents)
+            }
             LedgerReportLine(
                 timestampEpochMillis = row.timestamp,
                 isIncome = row.isIncome,
@@ -204,12 +272,26 @@ object LedgerReportBuilder {
                 paymentMethodLabel = row.methodLabel,
                 provider = row.provider,
                 amountCents = row.amountCents,
-                runningBalanceCents = running
+                runningBalanceCents = running,
+                feeCents = row.feeCents,
+                sourceTag = row.sourceTag
             )
         }
 
         val moneyIn = inRangeIncomes.sumOf { it.amountCents }
         val expenses = inRangeExpenses.sumOf { it.amountCents }
+        val fees = inRangeExpenses.sumOf { it.feeCents }
+        val refunds = inRangeIncomes
+            .filter { it.sourceId == com.kanso.spending.data.model.MoneySource.REFUND.id }
+            .sumOf { it.amountCents }
+        val smsRows = inRangeExpenses.count { it.source == "SMS" } +
+            inRangeIncomes.count { it.source == "SMS" }
+        val totalRows = inRangeExpenses.size + inRangeIncomes.size
+
+        val inRangeTransfers = transfers.filter { it.timestampEpochMillis in startMillis until endMillis }
+        val pendingInRange = pendingDetections.filter {
+            it.reviewStatus == "PENDING" && it.timestampEpochMillis in startMillis until endMillis
+        }
 
         val categoryBreakdown = inRangeExpenses
             .groupBy { categoryLabel(it.categoryId) }
@@ -230,16 +312,36 @@ object LedgerReportBuilder {
             openingBalanceCents = opening,
             moneyInCents = moneyIn,
             expensesCents = expenses,
-            closingBalanceCents = running,
-            transactionCount = inRangeExpenses.size + inRangeIncomes.size,
+            closingBalanceCents = running - inRangeTransfers.sumOf { it.feeCents },
+            transactionCount = totalRows,
             lines = lines,
             categoryBreakdown = categoryBreakdown,
-            methodBreakdown = methodBreakdown
+            methodBreakdown = methodBreakdown,
+            feesCents = fees,
+            refundsCents = refunds,
+            transfersCents = inRangeTransfers.sumOf { it.amountCents },
+            transferFeesCents = inRangeTransfers.sumOf { it.feeCents },
+            transfers = inRangeTransfers.map { t ->
+                ReportTransferLine(
+                    timestampEpochMillis = t.timestampEpochMillis,
+                    fromName = accountName(t.fromAccountId),
+                    toName = accountName(t.toAccountId),
+                    amountCents = t.amountCents,
+                    feeCents = t.feeCents,
+                    note = t.note
+                )
+            },
+            smsRowCount = smsRows,
+            manualRowCount = totalRows - smsRows,
+            pendingCount = pendingInRange.size,
+            pendingAmountCents = pendingInRange.sumOf { it.amountCents ?: 0L },
+            accountBalances = accountBalances,
+            reconciliationWarnings = reconciliationWarnings
         )
     }
 
     fun balanceCents(incomes: List<IncomeEntity>, expenses: List<ExpenseEntity>): Long =
-        incomes.sumOf { it.amountCents } - expenses.sumOf { it.amountCents }
+        incomes.sumOf { it.amountCents } - expenses.sumOf { it.amountCents + it.feeCents }
 
     fun formatDateLine(millis: Long, zone: ZoneId): String =
         LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), zone).format(dateFormatter)

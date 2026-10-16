@@ -2,7 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Zero network permissions requested: 100% local on-device financial privacy -->
+    <!-- Zero network permissions: 100% local on-device financial privacy.
+         The SMS permissions below are OPTIONAL and only used by the opt-in
+         Smart SMS Tracking feature (read on-device, parsed locally, message
+         bodies never stored, never uploaded). Without them the app works
+         exactly as before via manual entry, paste or the share sheet. -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
     <application
         android:name=".KansoApplication"
@@ -18,13 +26,33 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.KansoSpendingTracker">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Share-sheet import alternative: send transaction text from any
+                 app — no SMS permission involved. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
+
+        <!-- Live SMS detection. Only runs while Smart SMS Tracking is enabled
+             in settings; the permission gate sits in the app, and bodies are
+             parsed in memory only. -->
+        <receiver
+            android:name=".sms.SmsBroadcastReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

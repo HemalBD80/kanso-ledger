@@ -65,24 +65,43 @@ object LedgerReportPdfWriter {
         text(headingPaint, "SUMMARY")
         text(normalPaint, "Opening balance: $currencySymbol${report.openingBalanceCents.toMajor()}")
         text(normalPaint, "Money added: $currencySymbol${report.moneyInCents.toMajor()}")
+        if (report.refundsCents > 0) {
+            text(mutedPaint, "   of which refunds: $currencySymbol${report.refundsCents.toMajor()}")
+        }
         text(normalPaint, "Total expenses: $currencySymbol${report.expensesCents.toMajor()}")
+        text(normalPaint, "Fees: $currencySymbol${report.feesCents.toMajor()}")
         text(boldPaint, "Closing balance: $currencySymbol${report.closingBalanceCents.toMajor()}")
         text(normalPaint, "Transaction count: ${report.transactionCount}")
+        text(
+            normalPaint,
+            "Transfers in period (excluded from income/expense): $currencySymbol${report.transfersCents.toMajor()}"
+        )
+        text(normalPaint, "Transfer fees deducted from balances: $currencySymbol${report.transferFeesCents.toMajor()}")
+        text(normalPaint, "Origin: ${report.smsRowCount} from SMS · ${report.manualRowCount} manual")
+        if (report.pendingCount > 0) {
+            text(
+                mutedPaint,
+                "Unreviewed detections in period: ${report.pendingCount} (not counted in any total)"
+            )
+        }
         y += 8f
 
         text(headingPaint, "TRANSACTIONS")
         // Column header
         y += 2f
-        text(boldPaint, "Date      Time  Type      Description          Method        Amount")
+        text(boldPaint, "Date      Time  Type      Description          Method        Amount  O")
+        text(mutedPaint, "Origin: S = imported from your SMS, M = entered manually")
         report.lines.forEach { line ->
             val typePad = if (line.isIncome) "MONEY IN " else "EXPENSE  "
             val amount = (if (line.isIncome) "+" else "-") + currencySymbol + line.amountCents.toMajor()
+            val feeTag = if (line.feeCents > 0) " f${line.feeCents.toMajor()}" else ""
+            val originTag = line.sourceTag.firstOrNull()?.uppercaseChar()?.toString() ?: "M"
             val date = LedgerReportBuilder.formatDateLine(line.timestampEpochMillis, java.time.ZoneId.systemDefault())
             val time = LedgerReportBuilder.formatTimeLine(line.timestampEpochMillis, java.time.ZoneId.systemDefault())
             val categoryTag = if (line.isIncome) line.sourceLabel else line.categoryName
             text(
                 normalPaint,
-                "${date.take(10)} ${time} $typePad ${truncate(line.description, 22)} ${truncate(categoryTag, 10)} ${truncate(line.paymentMethodLabel, 12)} $amount"
+                "${date.take(10)} ${time} $typePad ${truncate(line.description, 22)} ${truncate(categoryTag, 10)} ${truncate(line.paymentMethodLabel, 12)} $amount$feeTag $originTag"
             )
         }
         y += 8f
@@ -102,6 +121,50 @@ object LedgerReportPdfWriter {
             report.methodBreakdown.forEach { row ->
                 text(normalPaint, "• ${truncate(row.label, 26)}  $currencySymbol${row.spentCents.toMajor()}  (${row.transactionCount})")
             }
+            y += 8f
+        }
+
+        if (report.transfers.isNotEmpty()) {
+            newPageIfNeeded(60f)
+            text(headingPaint, "TRANSFERS (NOT INCOME OR EXPENSE)")
+            report.transfers.forEach { t ->
+                val date = LedgerReportBuilder.formatDateLine(
+                    t.timestampEpochMillis, java.time.ZoneId.systemDefault()
+                )
+                val feeTag = if (t.feeCents > 0) " +fee $currencySymbol${t.feeCents.toMajor()}" else ""
+                text(
+                    normalPaint,
+                    "${date.take(10)} ${truncate(t.fromName, 14)} → ${truncate(t.toName, 14)}  " +
+                        "$currencySymbol${t.amountCents.toMajor()}$feeTag"
+                )
+            }
+            y += 8f
+        }
+
+        if (report.accountBalances.isNotEmpty()) {
+            newPageIfNeeded(60f)
+            text(headingPaint, "CURRENT ACCOUNT BALANCES (AT GENERATION)")
+            report.accountBalances.forEach { acc ->
+                text(
+                    normalPaint,
+                    "• ${truncate(acc.name, 24)} (${acc.typeLabel})  $currencySymbol${acc.balanceCents.toMajor()}"
+                )
+            }
+            y += 8f
+        }
+
+        if (report.reconciliationWarnings.isNotEmpty()) {
+            newPageIfNeeded(60f)
+            text(headingPaint, "UNRESOLVED RECONCILIATION DIFFERENCES")
+            report.reconciliationWarnings.forEach { w ->
+                text(
+                    normalPaint,
+                    "• ${truncate(w.name, 22)}  reported $currencySymbol${w.reportedCents.toMajor()} vs " +
+                        "ledger $currencySymbol${w.ledgerCents.toMajor()} (diff $currencySymbol${w.differenceCents.toMajor()})"
+                )
+            }
+            text(mutedPaint, "Your ledger values were not changed.")
+            y += 8f
         }
 
         doc.finishPage(page)

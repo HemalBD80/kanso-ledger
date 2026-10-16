@@ -46,7 +46,19 @@ data class IncomeEntity(
     val timestampEpochMillis: Long,
 
     @ColumnInfo(name = "note")
-    val note: String = ""
+    val note: String = "",
+
+    /** Owning account id ("" → resolved from [paymentMethod] for legacy rows). */
+    @ColumnInfo(name = "account_id", defaultValue = "")
+    val accountId: String = "",
+
+    /** MANUAL | SMS. */
+    @ColumnInfo(name = "source", defaultValue = "MANUAL")
+    val source: String = "MANUAL",
+
+    /** Fingerprint of the SMS detection that produced this row, if any. */
+    @ColumnInfo(name = "sms_fingerprint", defaultValue = "")
+    val smsFingerprint: String = ""
 ) {
     init {
         require(amountCents >= 0L) { "Income amount must be stored as a non-negative minor-unit amount" }

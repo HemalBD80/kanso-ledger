@@ -45,5 +45,29 @@ data class ExpenseEntity(
     val note: String = "",
 
     @ColumnInfo(name = "is_recurring")
-    val isRecurring: Boolean = false
-)
+    val isRecurring: Boolean = false,
+
+    /** Owning account id ("" → resolved from [paymentMethod] for legacy rows). */
+    @ColumnInfo(name = "account_id", defaultValue = "")
+    val accountId: String = "",
+
+    /**
+     * Provider fee charged alongside this expense, minor units. Total outflow
+     * = amountCents + feeCents. A standalone fee row has amountCents = 0.
+     */
+    @ColumnInfo(name = "fee_cents", defaultValue = "0")
+    val feeCents: Long = 0L,
+
+    /** MANUAL | SMS — shown in reports so imports are traceable. */
+    @ColumnInfo(name = "source", defaultValue = "MANUAL")
+    val source: String = "MANUAL",
+
+    /** Fingerprint of the SMS detection that produced this row, if any. */
+    @ColumnInfo(name = "sms_fingerprint", defaultValue = "")
+    val smsFingerprint: String = ""
+) {
+    init {
+        require(amountCents >= 0L) { "Expense amount must be a non-negative minor-unit value" }
+        require(feeCents >= 0L) { "Fee must be a non-negative minor-unit value" }
+    }
+}

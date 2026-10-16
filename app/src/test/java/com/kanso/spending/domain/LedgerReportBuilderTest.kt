@@ -164,17 +164,18 @@ class LedgerReportBuilderTest {
         )
         val csv = LedgerReportCsvWriter.toCsv(report, zone)
 
-        // Only the transaction data rows contain "MONEY IN" / "EXPENSE" types.
+        // Only the transaction data rows carry a MONEY IN / EXPENSE type in the
+        // Type column; parse by column so layout changes stay explicit here.
         val dataRows = csv.lines().filter {
             it.startsWith("\"") && (it.contains("\"MONEY IN\"") || it.contains("\"EXPENSE\""))
-        }
+        }.map { row -> row.removeSurrounding("\"").split("\",\"") }
         assertEquals(3, dataRows.size)
         val inTotal = dataRows
-            .filter { it.contains("\"MONEY IN\"") }
-            .sumOf { Regex("\"MONEY IN\"[^\\r\\n]*\"(\\d+)\",\"0\",\"(-?\\d+)\"").find(it)!!.groupValues[1].toLong() }
+            .filter { it[2] == "MONEY IN" }
+            .sumOf { it[9].toLong() }
         val outTotal = dataRows
-            .filter { it.contains("\"EXPENSE\"") }
-            .sumOf { Regex("\"EXPENSE\"[^\\r\\n]*\"0\",\"(\\d+)\",\"").find(it)!!.groupValues[1].toLong() }
+            .filter { it[2] == "EXPENSE" }
+            .sumOf { it[10].toLong() }
 
         assertEquals(report.moneyInCents, inTotal)
         assertEquals(report.expensesCents, outTotal)

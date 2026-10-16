@@ -4,18 +4,39 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.kanso.spending.data.local.LocalBackupManager
 import com.kanso.spending.data.local.dao.SpendingDao
+import com.kanso.spending.data.local.entity.AccountAdjustmentEntity
+import com.kanso.spending.data.local.entity.AccountEntity
+import com.kanso.spending.data.local.entity.AccountKind
 import com.kanso.spending.data.local.entity.AuditLogEntity
 import com.kanso.spending.data.local.entity.CategoryBudgetEntity
 import com.kanso.spending.data.local.entity.CategoryEntity
+import com.kanso.spending.data.local.entity.CategoryRuleEntity
 import com.kanso.spending.data.local.entity.ExpenseEntity
+import com.kanso.spending.data.local.entity.GoalContributionEntity
 import com.kanso.spending.data.local.entity.IncomeEntity
 import com.kanso.spending.data.local.entity.MonthlyBudgetEntity
+import com.kanso.spending.data.local.entity.RecurringRuleEntity
+import com.kanso.spending.data.local.entity.SavingsGoalEntity
+import com.kanso.spending.data.local.entity.SmsDetectionEntity
+import com.kanso.spending.data.local.entity.SmsMetaEntity
+import com.kanso.spending.data.local.entity.TransferEntity
 import com.kanso.spending.data.model.MoneySource
 import com.kanso.spending.data.model.PaymentMethod
+import com.kanso.spending.domain.accounts.AccountState
+import com.kanso.spending.domain.accounts.AccountStateFactory
+import com.kanso.spending.domain.categorization.CategoryRule
+import com.kanso.spending.domain.categorization.CategorySuggester
+import com.kanso.spending.domain.sms.IngestContext
+import com.kanso.spending.domain.sms.LedgerAction
+import com.kanso.spending.domain.sms.RawInboundSms
+import com.kanso.spending.domain.sms.SmsImportMode
+import com.kanso.spending.domain.sms.SmsIngestPlanner
+import com.kanso.spending.domain.sms.SmsTxType
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import java.time.YearMonth
 import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicInteger
@@ -30,6 +51,49 @@ enum class LedgerThemeMode(val id: String, val label: String) {
             entries.firstOrNull { it.id == id } ?: PAPER_LIGHT
     }
 }
+
+/**
+ * Overrides a detection can carry at approval time. Every field is optional:
+ * an empty approval accepts exactly what the parser extracted (which the user
+ * has just reviewed), never anything guessed.
+ */
+data class DetectionApproval(
+    val categoryId: String? = null,
+    val accountId: String? = null,
+    val transferFromAccountId: String? = null,
+    val transferToAccountId: String? = null,
+    val amountCents: Long? = null,
+    val title: String? = null,
+    val note: String? = null,
+    /** RECORD_EXPENSE / RECORD_INCOME — lets review resolve unclear messages. */
+    val action: LedgerAction? = null,
+    /** Keyword that becomes a permanent categorisation rule when present. */
+    val saveAsRuleKeyword: String? = null
+)
+
+/** Outcome of one [SpendingRepository.ingestSmsBatch] call. */
+data class SmsIngestSummary(
+    val totalMessages: Int,
+    val recorded: Int,
+    val queuedForReview: Int,
+    val duplicates: Int,
+    val ignored: Int,
+    val batchId: String
+)
+
+/**
+ * User-facing switches for the intelligence features. Off by default:
+ * SMS import must be enabled deliberately, never silently.
+ */
+data class SmartSettings(
+    val smsEnabled: Boolean = false,
+    val smsImportMode: SmsImportMode = SmsImportMode.REVIEW,
+    val notifyNewDetections: Boolean = true,
+    val notifyBudgetWarnings: Boolean = true,
+    val notifyReconciliation: Boolean = true,
+    val notifyRecurringDue: Boolean = true,
+    val appLockEnabled: Boolean = false
+)
 
 /**
  * Local vault repository. Every write goes through here so the audit trail is
@@ -308,7 +372,16 @@ class SpendingRepository(
             categoryBudgets = spendingDao.getAllCategoryBudgetsSnapshot(),
             incomes = spendingDao.getAllIncomeSnapshot(),
             categories = spendingDao.getAllCategoriesSnapshot(),
-            currencySymbol = _currencySymbol.value
+            currencySymbol = _currencySymbol.value,
+            accounts = spendingDao.getAllAccountsSnapshot(),
+            transfers = spendingDao.getAllTransfersSnapshot(),
+            adjustments = spendingDao.getAllAdjustmentsSnapshot(),
+            recurringRules = spendingDao.getAllRecurringRulesSnapshot(),
+            savingsGoals = spendingDao.getAllSavingsGoalsSnapshot(),
+            goalContributions = spendingDao.getAllGoalContributionsSnapshot(),
+            categoryRules = spendingDao.getAllCategoryRulesSnapshot(),
+            smsMetas = spendingDao.getAllSmsMetasSnapshot(),
+            smsDetections = spendingDao.getAllDetectionsSnapshot()
         )
         return LocalBackupManager.exportToJsonString(snapshot)
     }
@@ -335,11 +408,29 @@ class SpendingRepository(
                 monthlyBudgets = snapshot.monthlyBudgets,
                 categoryBudgets = snapshot.categoryBudgets,
                 incomes = snapshot.incomes,
-                categories = categoriesToInsert
+                categories = categoriesToInsert,
+                accounts = snapshot.accounts,
+                transfers = snapshot.transfers,
+                adjustments = snapshot.adjustments,
+                recurringRules = snapshot.recurringRules,
+                savingsGoals = snapshot.savingsGoals,
+                goalContributions = snapshot.goalContributions,
+                categoryRules = snapshot.categoryRules
             )
+            // v1/v2 snapshots carry no accounts; either way the four structural
+            // accounts must exist after a restore.
+            seedDefaultAccountsIfMissing()
+            // Older snapshots without sms tables still need dedup protection
+            // from the ledger rows' own fingerprints — that is automatic.
+            if (snapshot.smsMetas.isNotEmpty() || snapshot.smsDetections.isNotEmpty()) {
+                snapshot.smsMetas.forEach { spendingDao.insertSmsMetaIfNew(it) }
+                snapshot.smsDetections.forEach { spendingDao.insertDetectionIfNew(it) }
+            }
             setCurrencySymbol(snapshot.currencySymbol)
-            logAudit("vault", "restore", "restored", "Vault restored from local snapshot: " +
-                "${sanitizedExpenses.size} expenses, ${snapshot.incomes.size} money-in records")
+            logAudit("vault", "restore", "restored", "Vault restored from local snapshot (schema v" +
+                "${if (snapshot.accounts.isNotEmpty()) 3 else 1}): " +
+                "${sanitizedExpenses.size} expenses, ${snapshot.incomes.size} money-in records, " +
+                "${snapshot.transfers.size} transfers, ${snapshot.savingsGoals.size} goals")
             (sanitizedExpenses.size + snapshot.incomes.size)
         }
     }
@@ -347,7 +438,899 @@ class SpendingRepository(
     suspend fun wipeAllData() {
         spendingDao.wipeAllLocalData()
         seedDefaultCategoriesIfMissing()
+        seedDefaultAccountsIfMissing()
         logAudit("vault", "wipe", "wiped", "Local vault wiped clean and defaults re-seeded")
+    }
+
+    // ------------------------------------------------------------- settings
+
+    private val _smartSettings = MutableStateFlow(loadSmartSettings())
+    val smartSettings: StateFlow<SmartSettings> = _smartSettings.asStateFlow()
+
+    private fun loadSmartSettings() = SmartSettings(
+        smsEnabled = prefs.getBoolean(KEY_SMS_ENABLED, false),
+        smsImportMode = runCatching {
+            SmsImportMode.valueOf(prefs.getString(KEY_SMS_MODE, SmsImportMode.REVIEW.name) ?: "")
+        }.getOrDefault(SmsImportMode.REVIEW),
+        notifyNewDetections = prefs.getBoolean(KEY_NOTIF_DETECTED, true),
+        notifyBudgetWarnings = prefs.getBoolean(KEY_NOTIF_BUDGET, true),
+        notifyReconciliation = prefs.getBoolean(KEY_NOTIF_RECONCILE, true),
+        notifyRecurringDue = prefs.getBoolean(KEY_NOTIF_RECURRING, true),
+        appLockEnabled = prefs.getBoolean(KEY_APP_LOCK, false)
+    )
+
+    fun updateSmartSettings(transform: (SmartSettings) -> SmartSettings) {
+        val next = transform(_smartSettings.value)
+        prefs.edit()
+            .putBoolean(KEY_SMS_ENABLED, next.smsEnabled)
+            .putString(KEY_SMS_MODE, next.smsImportMode.name)
+            .putBoolean(KEY_NOTIF_DETECTED, next.notifyNewDetections)
+            .putBoolean(KEY_NOTIF_BUDGET, next.notifyBudgetWarnings)
+            .putBoolean(KEY_NOTIF_RECONCILE, next.notifyReconciliation)
+            .putBoolean(KEY_NOTIF_RECURRING, next.notifyRecurringDue)
+            .putBoolean(KEY_APP_LOCK, next.appLockEnabled)
+            .apply()
+        _smartSettings.value = next
+    }
+
+    // ------------------------------------------------------------- accounts
+
+    fun observeAccounts(): Flow<List<AccountEntity>> = spendingDao.observeAccounts()
+
+    fun observeTransfers(): Flow<List<TransferEntity>> = spendingDao.observeTransfers()
+
+    fun observeAdjustments(): Flow<List<AccountAdjustmentEntity>> = spendingDao.observeAdjustments()
+
+    suspend fun snapshotAccounts(): List<AccountEntity> = spendingDao.getAllAccountsSnapshot()
+
+    /** Confirmed spend (principal + fees) inside a calendar month. */
+    suspend fun monthSpentCents(yearMonth: YearMonth): Long {
+        val zone = ZoneId.systemDefault()
+        val start = yearMonth.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        val end = yearMonth.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        return spendingDao.getAllExpensesSnapshot()
+            .filter { it.timestampEpochMillis in start until end }
+            .sumOf { it.amountCents + it.feeCents }
+    }
+
+    suspend fun snapshotRecurringRules(): List<RecurringRuleEntity> =
+        spendingDao.getAllRecurringRulesSnapshot()
+
+    suspend fun snapshotTransfers(): List<TransferEntity> = spendingDao.getAllTransfersSnapshot()
+
+    suspend fun snapshotDetections(): List<SmsDetectionEntity> = spendingDao.getAllDetectionsSnapshot()
+
+    /** Seeds the four structural accounts (৳0.00) the first time v3 runs. */
+    suspend fun seedDefaultAccountsIfMissing() {
+        val existing = spendingDao.getAllAccountsSnapshot()
+        val now = System.currentTimeMillis()
+        AccountEntity.SEEDS.forEach { seed ->
+            if (existing.none { it.id == seed.id }) {
+                spendingDao.insertAccountIfMissing(seed.copy(createdAtMillis = now))
+            }
+        }
+    }
+
+    /**
+     * Live per-account balances from the ledger itself: opening + activity +
+     * transfers + adjustments, exactly what [AccountBalanceEngine] defines.
+     */
+    fun observeAccountStates(): Flow<List<AccountState>> = combine(
+        spendingDao.observeAccounts(),
+        spendingDao.observeAllExpenses(),
+        spendingDao.observeAllIncome(),
+        spendingDao.observeTransfers(),
+        spendingDao.observeAdjustments()
+    ) { accounts, expenses, incomes, transfers, adjustments ->
+        AccountStateFactory.states(accounts, expenses, incomes, transfers, adjustments)
+    }
+
+    /** One-shot variant for reports. */
+    suspend fun accountStatesOnce(): List<AccountState> = AccountStateFactory.states(
+        accounts = spendingDao.getAllAccountsSnapshot(),
+        expenses = spendingDao.getAllExpensesSnapshot(),
+        incomes = spendingDao.getAllIncomeSnapshot(),
+        transfers = spendingDao.getAllTransfersSnapshot(),
+        adjustments = spendingDao.getAllAdjustmentsSnapshot()
+    )
+
+    suspend fun createAccount(
+        name: String,
+        kind: AccountKind,
+        openingBalanceCents: Long,
+        note: String = ""
+    ): String {
+        val trimmed = name.trim()
+        require(trimmed.isNotEmpty()) { "Account name cannot be empty" }
+        val existing = spendingDao.getAllAccountsSnapshot()
+        require(existing.none { it.name.equals(trimmed, ignoreCase = true) }) {
+            "An account with this name already exists"
+        }
+        val id = "acc_${System.currentTimeMillis()}_${auditCounter.incrementAndGet()}"
+        val account = AccountEntity(
+            id = id,
+            name = trimmed,
+            type = kind.name,
+            openingBalanceCents = openingBalanceCents,
+            sortOrder = (existing.maxOfOrNull { it.sortOrder } ?: 0) + 10,
+            note = note.trim(),
+            createdAtMillis = System.currentTimeMillis()
+        )
+        spendingDao.upsertAccount(account)
+        logAudit(
+            "account", id, "added",
+            "Created ${kind.name} account '$trimmed' with opening balance ${openingBalanceCents} minor units"
+        )
+        return id
+    }
+
+    suspend fun renameAccount(accountId: String, newName: String) {
+        val trimmed = newName.trim()
+        require(trimmed.isNotEmpty()) { "Account name cannot be empty" }
+        val account = spendingDao.findAccountById(accountId) ?: error("Unknown account $accountId")
+        require(
+            accountId in AccountEntity.STRUCTURAL_IDS ||
+                spendingDao.getAllAccountsSnapshot().none {
+                    it.id != accountId && it.name.equals(trimmed, ignoreCase = true)
+                }
+        ) { "An account with this name already exists" }
+        spendingDao.upsertAccount(account.copy(name = trimmed))
+        logAudit("account", accountId, "edited", "Renamed ${account.name} → '$trimmed'")
+    }
+
+    /** The note links provider messages to this account (e.g. "***4512"). */
+    suspend fun setAccountNote(accountId: String, note: String) {
+        val account = spendingDao.findAccountById(accountId) ?: error("Unknown account $accountId")
+        spendingDao.upsertAccount(account.copy(note = note.trim()))
+        logAudit("account", accountId, "edited", "Updated linked-message hint for ${account.name}")
+    }
+
+    suspend fun setAccountOpeningBalance(accountId: String, openingBalanceCents: Long) {
+        val account = spendingDao.findAccountById(accountId) ?: error("Unknown account $accountId")
+        spendingDao.upsertAccount(account.copy(openingBalanceCents = openingBalanceCents))
+        logAudit(
+            "account", accountId, "edited",
+            "Opening balance of ${account.name} set to ${openingBalanceCents} minor units; " +
+                "all activity recalculated automatically"
+        )
+    }
+
+    suspend fun setAccountArchived(accountId: String, archived: Boolean) {
+        val account = spendingDao.findAccountById(accountId) ?: error("Unknown account $accountId")
+        spendingDao.upsertAccount(account.copy(isArchived = archived))
+        logAudit(
+            "account", accountId, if (archived) "archived" else "restored",
+            (if (archived) "Archived " else "Restored ") + account.name +
+                (if (archived) "; its history is kept and excluded from net totals" else "")
+        )
+    }
+
+    /**
+     * Deleting is guarded: structural accounts never, and custom accounts only
+     * when their balance is ৳0.00 and nothing references them (archive is the
+     * safe alternative, and is always offered first).
+     */
+    suspend fun deleteAccount(accountId: String) {
+        require(accountId !in AccountEntity.STRUCTURAL_IDS) {
+            "Built-in accounts cannot be deleted — archive them instead."
+        }
+        val account = spendingDao.findAccountById(accountId) ?: error("Unknown account $accountId")
+        val balance = accountStatesOnce().firstOrNull { it.accountId == accountId }
+            ?.calculatedBalanceCents ?: 0L
+        require(balance == 0L) {
+            "Account '${account.name}' still holds a balance — adjust or transfer it to ৳0.00 first."
+        }
+        require(spendingDao.countExpensesForAccount(accountId) == 0) {
+            "Account '${account.name}' still has spending history — archive it instead."
+        }
+        require(spendingDao.countIncomeForAccount(accountId) == 0) {
+            "Account '${account.name}' still has money-in history — archive it instead."
+        }
+        require(spendingDao.countTransfersForAccount(accountId) == 0) {
+            "Account '${account.name}' is referenced by transfers — archive it instead."
+        }
+        spendingDao.deleteAccountById(accountId)
+        logAudit("account", accountId, "deleted", "Deleted empty custom account '${account.name}'")
+    }
+
+    suspend fun recordAccountAdjustment(
+        accountId: String,
+        deltaCents: Long,
+        kind: String = "MANUAL",
+        note: String = ""
+    ): Long {
+        require(spendingDao.findAccountById(accountId) != null) { "Unknown account $accountId" }
+        val id = spendingDao.insertAdjustment(
+            AccountAdjustmentEntity(
+                accountId = accountId,
+                deltaCents = deltaCents,
+                kind = kind,
+                timestampEpochMillis = System.currentTimeMillis(),
+                note = note.trim()
+            )
+        )
+        logAudit(
+            "account", accountId, "adjusted",
+            "Adjustment of ${deltaCents} minor units (${kind}) recorded; balance recalculated"
+        )
+        return id
+    }
+
+    /** Stored beside the ledger — the calculated balance is never rewritten. */
+    suspend fun setAccountReportedBalance(accountId: String, balanceCents: Long, atMillis: Long) {
+        spendingDao.updateAccountReportedBalance(accountId, balanceCents, atMillis)
+    }
+
+    // ------------------------------------------------------------ transfers
+
+    suspend fun createTransfer(
+        fromAccountId: String,
+        toAccountId: String,
+        amountCents: Long,
+        feeCents: Long = 0L,
+        note: String = "",
+        timestampEpochMillis: Long = System.currentTimeMillis()
+    ): String {
+        require(fromAccountId != toAccountId) { "Choose two different accounts" }
+        require(amountCents > 0L) { "Transfer amount must be greater than zero" }
+        require(spendingDao.findAccountById(fromAccountId) != null) { "Unknown source account" }
+        require(spendingDao.findAccountById(toAccountId) != null) { "Unknown destination account" }
+        val id = "tr_${System.currentTimeMillis()}_${auditCounter.incrementAndGet()}"
+        spendingDao.upsertTransfer(
+            TransferEntity(
+                id = id,
+                fromAccountId = fromAccountId,
+                toAccountId = toAccountId,
+                amountCents = amountCents,
+                feeCents = feeCents,
+                timestampEpochMillis = timestampEpochMillis,
+                note = note.trim()
+            )
+        )
+        logAudit(
+            "transfer", id, "added",
+            "Moved ${amountCents} minor units between accounts (fee ${feeCents}); " +
+                "income and expense totals unchanged by design"
+        )
+        return id
+    }
+
+    suspend fun deleteTransfer(transferId: String) {
+        spendingDao.deleteTransferById(transferId)
+        logAudit("transfer", transferId, "deleted", "Removed transfer $transferId; balances recalculated")
+    }
+
+    // --------------------------------------------------------- SMS ingestion
+
+    fun observeDetections(): Flow<List<SmsDetectionEntity>> = spendingDao.observeDetections()
+
+    fun observePendingDetections(): Flow<List<SmsDetectionEntity>> =
+        spendingDao.observePendingDetections()
+
+    /** Most recent import batch, so "undo last import" has a target. */
+    suspend fun latestDetectionBatchId(): String? =
+        spendingDao.getAllDetectionsSnapshot().firstOrNull()?.batchId
+
+    /**
+     * Parse, de-duplicate and persist one batch of messages. Nothing here ever
+     * stores a message body — only fingerprints, structured fields, and the
+     * ledger rows the mode (or the later review) commits.
+     */
+    suspend fun ingestSmsBatch(
+        messages: List<RawInboundSms>,
+        mode: SmsImportMode = smartSettings.value.smsImportMode
+    ): SmsIngestSummary {
+        if (messages.isEmpty()) return SmsIngestSummary(0, 0, 0, 0, 0, "")
+        seedDefaultAccountsIfMissing()
+
+        val accounts = spendingDao.getAllAccountsSnapshot()
+        val known = HashSet<String>(spendingDao.getAllKnownFingerprints())
+        known.addAll(spendingDao.getAllLedgerFingerprints())
+
+        val batchId = "batch_${System.currentTimeMillis()}_${auditCounter.incrementAndGet()}"
+        val context = IngestContext(
+            knownFingerprints = known,
+            mode = mode,
+            batchId = batchId,
+            nowMillis = System.currentTimeMillis(),
+            hintToAccountId = accounts.filter { it.note.isNotBlank() }
+                .associate { it.note.lowercase() to it.id },
+            nameToAccountId = accounts.associate { it.name.lowercase() to it.id }
+        )
+        val plan = SmsIngestPlanner.plan(messages, context)
+        val now = context.nowMillis
+
+        for (item in plan.items) {
+            spendingDao.insertSmsMetaIfNew(
+                SmsMetaEntity(
+                    fingerprint = item.fingerprint,
+                    sender = item.sender,
+                    provider = item.provider,
+                    receivedAtMillis = item.receivedAtMillis,
+                    processedAtMillis = now,
+                    outcome = item.metaOutcome,
+                    txType = item.txType
+                )
+            )
+            val planned = item.detection ?: continue
+            val tx = planned.parsed
+            val detection = SmsDetectionEntity(
+                fingerprint = item.fingerprint,
+                sender = item.sender,
+                provider = tx.provider,
+                txType = tx.type.name,
+                action = tx.action.name,
+                amountCents = tx.amountCents,
+                feeCents = tx.feeCents,
+                timestampEpochMillis = tx.timestampMillis,
+                merchant = tx.merchantOrCounterparty,
+                refId = tx.referenceId ?: "",
+                accountHint = tx.accountHint ?: "",
+                reportedBalanceCents = tx.reportedBalanceCents,
+                confidence = tx.confidence,
+                reviewReason = tx.reviewReason ?: "",
+                reviewStatus = planned.reviewStatus,
+                categoryId = suggestCategoryId(
+                    listOf(tx.merchantOrCounterparty, tx.provider)
+                        .filter { it.isNotBlank() }.joinToString(" ")
+                ),
+                accountId = planned.resolvedAccountId,
+                batchId = batchId,
+                createdAtMillis = now,
+                updatedAtMillis = now
+            )
+            val detectionId = spendingDao.insertDetectionIfNew(detection)
+            if (detectionId == -1L) continue // lost a race with a parallel import
+
+            var finalDetection = detection.copy(id = detectionId)
+            if (planned.writeLedger) {
+                val outcome = runCatching { materializeDetection(finalDetection, DetectionApproval()) }
+                val link = outcome.getOrNull()
+                if (link != null) {
+                    finalDetection = finalDetection.copy(
+                        linkedRecordType = link.first,
+                        linkedRecordId = link.second
+                    )
+                } else {
+                    // Something about this message prevents a safe write
+                    // (e.g. a withdrawal we cannot place): queue it for human
+                    // review instead of guessing or crashing.
+                    finalDetection = finalDetection.copy(
+                        reviewStatus = "PENDING",
+                        reviewReason = outcome.exceptionOrNull()?.message ?: "needs manual setup"
+                    )
+                }
+            }
+            if (finalDetection.reviewStatus == "APPROVED") {
+                applyReportedBalance(finalDetection)
+            }
+            if (finalDetection != detection.copy(id = detectionId)) {
+                spendingDao.updateDetection(finalDetection)
+            }
+        }
+
+        if (plan.items.isNotEmpty()) {
+            logAudit(
+                "sms", batchId, "imported",
+                "Imported ${plan.items.size} message(s): ${plan.recordedCount} recorded, " +
+                    "${plan.pendingCount} queued for review, ${plan.duplicateCount} duplicate(s), " +
+                    "${plan.ignoredCount} not financial (no content stored)"
+            )
+        }
+        return SmsIngestSummary(
+            totalMessages = messages.size,
+            recorded = plan.recordedCount,
+            queuedForReview = plan.pendingCount,
+            duplicates = plan.duplicateCount,
+            ignored = plan.ignoredCount,
+            batchId = batchId
+        )
+    }
+
+    /** Approve a reviewed detection: write the real ledger row and link it. */
+    suspend fun approveDetection(
+        detectionId: Long,
+        approval: DetectionApproval = DetectionApproval()
+    ): Result<String> = runCatching {
+        val detection = spendingDao.getAllDetectionsSnapshot().firstOrNull { it.id == detectionId }
+            ?: error("Detection not found")
+        require(detection.reviewStatus == "PENDING") { "Only pending detections can be approved" }
+        val now = System.currentTimeMillis()
+
+        // Balance-only notices carry no transaction — approving attaches them
+        // to an account so reconciliation can compare provider vs ledger.
+        if (detection.action == LedgerAction.IGNORE.name) {
+            val accountId = (approval.accountId ?: detection.accountId).ifBlank {
+                error("Choose which account this balance belongs to")
+            }
+            spendingDao.updateDetection(
+                detection.copy(reviewStatus = "APPROVED", accountId = accountId, updatedAtMillis = now)
+            )
+            applyReportedBalance(detection.copy(accountId = accountId))
+            logAudit(
+                "sms", detection.fingerprint.take(16), "approved",
+                "Provider-reported balance attached to an account"
+            )
+            return@runCatching accountId
+        }
+
+        val effective = if (approval.action != null) detection.copy(action = approval.action.name)
+        else detection
+        val withOverrides = effective.copy(
+            amountCents = approval.amountCents ?: detection.amountCents,
+            merchant = approval.title?.takeIf { it.isNotBlank() } ?: detection.merchant
+        )
+        val link = materializeDetection(withOverrides, approval)
+            ?: error("This detection has no amount to record — edit it first")
+        val accountId = approval.accountId ?: detection.accountId
+        val categoryId = approval.categoryId ?: detection.categoryId
+
+        spendingDao.updateDetection(
+            detection.copy(
+                action = effective.action,
+                amountCents = withOverrides.amountCents,
+                merchant = withOverrides.merchant,
+                reviewStatus = "APPROVED",
+                categoryId = categoryId,
+                accountId = accountId,
+                linkedRecordType = link.first,
+                linkedRecordId = link.second,
+                updatedAtMillis = now
+            )
+        )
+        if (detection.reportedBalanceCents != null) {
+            applyReportedBalance(detection.copy(accountId = accountId))
+        }
+        approval.saveAsRuleKeyword?.trim()?.takeIf { it.isNotEmpty() }?.let { keyword ->
+            saveCategoryRule(keyword, categoryId)
+        }
+        logAudit(
+            "sms", detection.fingerprint.take(16), "approved",
+            "Detection approved → ${link.first.lowercase()} ${link.second}" +
+                (approval.saveAsRuleKeyword?.takeIf { it.isNotBlank() }
+                    ?.let { "; rule saved for '$it'" } ?: "")
+        )
+        link.second
+    }
+
+    /** Reject: the message stays recorded as seen, but never becomes money. */
+    suspend fun rejectDetection(detectionId: Long, reason: String = "") {
+        val detection = spendingDao.getAllDetectionsSnapshot().firstOrNull { it.id == detectionId }
+            ?: error("Detection not found")
+        require(detection.reviewStatus == "PENDING") { "Only pending detections can be rejected" }
+        spendingDao.updateDetection(
+            detection.copy(
+                reviewStatus = "REJECTED",
+                reviewReason = reason.ifBlank { "rejected by user" },
+                updatedAtMillis = System.currentTimeMillis()
+            )
+        )
+        logAudit(
+            "sms", detection.fingerprint.take(16), "rejected",
+            "Detection rejected; no ledger row created"
+        )
+    }
+
+    /**
+     * Undo a recent import batch: removes every ledger row it created, the
+     * detections, and their fingerprints so the same messages can be imported
+     * again later. Rows edited by hand after import are removed too — that is
+     * what "undo the import" means, and it is reported in the audit trail.
+     */
+    suspend fun undoSmsBatch(batchId: String): Int {
+        val detections = spendingDao.getDetectionsInBatch(batchId)
+        for (detection in detections) {
+            when (detection.linkedRecordType) {
+                "EXPENSE" -> detection.linkedRecordId.toLongOrNull()?.let {
+                    spendingDao.deleteExpenseById(it)
+                }
+                "INCOME" -> detection.linkedRecordId.toLongOrNull()?.let {
+                    spendingDao.deleteIncomeById(it)
+                }
+                "TRANSFER" -> spendingDao.deleteTransferById(detection.linkedRecordId)
+            }
+        }
+        val fingerprints = detections.map { it.fingerprint }
+        spendingDao.deleteDetectionsInBatch(batchId)
+        if (fingerprints.isNotEmpty()) spendingDao.deleteSmsMetaForFingerprints(fingerprints)
+        logAudit(
+            "sms", batchId, "undone",
+            "Rolled back import batch: ${detections.size} detection(s) removed with their ledger rows; " +
+                "confirmed totals recalculated"
+        )
+        return detections.size
+    }
+
+    /**
+     * Clears stored SMS metadata and the review queue. Ledger rows created
+     * from detections are kept (they are confirmed money), and their
+     * fingerprints live on the rows themselves, so a later re-import still
+     * cannot duplicate them.
+     */
+    suspend fun clearSmsImportHistory() {
+        spendingDao.clearSmsMeta()
+        spendingDao.clearAllDetections()
+        logAudit(
+            "sms", "history", "cleared",
+            "Cleared SMS import history and review queue; recorded transactions untouched"
+        )
+    }
+
+    /** Write one approved (or auto-approved) detection into the ledger. */
+    private suspend fun materializeDetection(
+        detection: SmsDetectionEntity,
+        approval: DetectionApproval
+    ): Pair<String, String>? {
+        val action = approval.action ?: runCatching {
+            LedgerAction.valueOf(detection.action)
+        }.getOrDefault(LedgerAction.REVIEW_ONLY)
+
+        val accountId = approval.accountId ?: detection.accountId
+        val categoryId = (approval.categoryId ?: detection.categoryId)
+            .ifBlank { CategoryEntity.UNCATEGORIZED_ID }
+        val amountCents = (approval.amountCents ?: detection.amountCents ?: 0L).coerceAtLeast(0L)
+        val method = paymentMethodFor(detection, accountId)
+        val note = listOfNotNull(
+            approval.note?.trim()?.takeIf { it.isNotEmpty() },
+            detection.refId.takeIf { it.isNotBlank() }?.let { "Ref $it" }
+        ).joinToString(" · ")
+
+        return when (action) {
+            LedgerAction.RECORD_EXPENSE -> {
+                val id = spendingDao.upsertExpense(
+                    ExpenseEntity(
+                        title = approval.title?.ifBlank { null } ?: detectionTitle(detection),
+                        amountCents = amountCents,
+                        categoryId = categoryId,
+                        paymentMethod = method.id,
+                        paymentProvider = detection.provider,
+                        timestampEpochMillis = detection.timestampEpochMillis,
+                        note = note,
+                        accountId = accountId,
+                        feeCents = detection.feeCents.coerceAtLeast(0L),
+                        source = SOURCE_SMS,
+                        smsFingerprint = detection.fingerprint
+                    )
+                )
+                "EXPENSE" to id.toString()
+            }
+
+            LedgerAction.RECORD_INCOME -> {
+                val sourceId = if (detection.txType == SmsTxType.REFUND.name) {
+                    MoneySource.REFUND.id
+                } else {
+                    MoneySource.TRANSFER_IN.id
+                }
+                val id = spendingDao.upsertIncome(
+                    IncomeEntity(
+                        title = approval.title?.ifBlank { null } ?: detectionTitle(detection),
+                        amountCents = amountCents,
+                        sourceId = sourceId,
+                        paymentMethod = method.id,
+                        paymentProvider = detection.provider,
+                        timestampEpochMillis = detection.timestampEpochMillis,
+                        note = note,
+                        accountId = accountId,
+                        source = SOURCE_SMS,
+                        smsFingerprint = detection.fingerprint
+                    )
+                )
+                "INCOME" to id.toString()
+            }
+
+            LedgerAction.RECORD_FEE -> {
+                // The fee IS the debit: principal stays ৳0.00 so reports can
+                // show transaction fees as their own line, never as spending.
+                val fee = (detection.amountCents ?: detection.feeCents).coerceAtLeast(0L)
+                val id = spendingDao.upsertExpense(
+                    ExpenseEntity(
+                        title = approval.title?.ifBlank { null } ?: "${detection.provider} Fee",
+                        amountCents = 0L,
+                        categoryId = categoryId,
+                        paymentMethod = method.id,
+                        paymentProvider = detection.provider,
+                        timestampEpochMillis = detection.timestampEpochMillis,
+                        note = note,
+                        accountId = accountId,
+                        feeCents = fee,
+                        source = SOURCE_SMS,
+                        smsFingerprint = detection.fingerprint
+                    )
+                )
+                "EXPENSE" to id.toString()
+            }
+
+            LedgerAction.RECORD_TRANSFER -> {
+                val txType = runCatching { SmsTxType.valueOf(detection.txType) }
+                    .getOrDefault(SmsTxType.UNKNOWN)
+                val fallback = AccountStateFactory.resolve(accountId, method.id, structuralIdSet())
+                val (from, to) = when (txType) {
+                    SmsTxType.DEPOSIT -> (approval.transferFromAccountId ?: AccountEntity.CASH_ID) to
+                        (approval.transferToAccountId ?: fallback)
+                    else -> (approval.transferFromAccountId ?: fallback) to
+                        (approval.transferToAccountId ?: AccountEntity.CASH_ID)
+                }
+                require(from != to) { "Choose two different accounts for this transfer" }
+                val id = "tr_${System.currentTimeMillis()}_${auditCounter.incrementAndGet()}"
+                spendingDao.upsertTransfer(
+                    TransferEntity(
+                        id = id,
+                        fromAccountId = from,
+                        toAccountId = to,
+                        amountCents = amountCents.coerceAtLeast(1L),
+                        feeCents = detection.feeCents.coerceAtLeast(0L),
+                        timestampEpochMillis = detection.timestampEpochMillis,
+                        note = note,
+                        origin = "SMS",
+                        refId = detection.refId,
+                        smsFingerprint = detection.fingerprint
+                    )
+                )
+                "TRANSFER" to id
+            }
+
+            // Nothing financial to write (balance-only / unclear): review owns it.
+            LedgerAction.REVIEW_ONLY, LedgerAction.IGNORE -> null
+        }
+    }
+
+    /** Provider balance → account, stored beside (never over) the ledger. */
+    private suspend fun applyReportedBalance(detection: SmsDetectionEntity) {
+        val balance = detection.reportedBalanceCents ?: return
+        val accountId = detection.accountId.ifBlank { return }
+        if (spendingDao.findAccountById(accountId) == null) return
+        setAccountReportedBalance(accountId, balance, detection.timestampEpochMillis)
+    }
+
+    private suspend fun structuralIdSet(): Set<String> =
+        spendingDao.getAllAccountsSnapshot().map { it.id }.toSet()
+
+    private fun detectionTitle(detection: SmsDetectionEntity): String {
+        val what = when (
+            runCatching { SmsTxType.valueOf(detection.txType) }.getOrDefault(SmsTxType.UNKNOWN)
+        ) {
+            SmsTxType.FEE -> "Fee"
+            SmsTxType.REFUND -> "Refund"
+            SmsTxType.MONEY_RECEIVED -> "Money Received"
+            SmsTxType.MONEY_SENT -> "Money Sent"
+            SmsTxType.WITHDRAWAL -> "Cash Withdrawal"
+            SmsTxType.DEPOSIT -> "Cash Deposit"
+            SmsTxType.PURCHASE -> "Purchase"
+            SmsTxType.TRANSFER_SELF -> "Transfer"
+            else -> "Imported Transaction"
+        }
+        return if (detection.merchant.isNotBlank()) "$what · ${detection.merchant}"
+        else "$what · ${detection.provider}"
+    }
+
+    /** Known account → its method; otherwise the provider decides. */
+    private suspend fun paymentMethodFor(
+        detection: SmsDetectionEntity,
+        accountId: String
+    ): PaymentMethod {
+        val account = accountId.takeIf { it.isNotBlank() }?.let { spendingDao.findAccountById(it) }
+        if (account != null) {
+            return when (runCatching { AccountKind.valueOf(account.type) }.getOrDefault(AccountKind.CASH)) {
+                AccountKind.CASH -> PaymentMethod.CASH
+                AccountKind.BANK -> PaymentMethod.BANK_TRANSFER
+                AccountKind.WALLET -> PaymentMethod.MOBILE_WALLET
+                AccountKind.CARD ->
+                    if (detection.provider.contains("credit", ignoreCase = true)) PaymentMethod.CREDIT_CARD
+                    else PaymentMethod.DEBIT_CARD
+            }
+        }
+        val provider = detection.provider
+        return when {
+            provider.equals("bKash", true) || provider.equals("Nagad", true) ||
+                provider.equals("Rocket", true) -> PaymentMethod.MOBILE_WALLET
+            provider.contains("card", true) -> PaymentMethod.DEBIT_CARD
+            provider.contains("bank", true) -> PaymentMethod.BANK_TRANSFER
+            else -> PaymentMethod.OTHER
+        }
+    }
+
+    // -------------------------------------------------------- category rules
+
+    fun observeCategoryRules(): Flow<List<CategoryRuleEntity>> = spendingDao.observeCategoryRules()
+
+    suspend fun saveCategoryRule(keyword: String, categoryId: String): String {
+        val trimmed = keyword.trim()
+        require(trimmed.isNotEmpty()) { "Rule keyword cannot be empty" }
+        val id = "rule_${System.currentTimeMillis()}_${auditCounter.incrementAndGet()}"
+        spendingDao.upsertCategoryRule(
+            CategoryRuleEntity(
+                id = id,
+                keyword = trimmed,
+                categoryId = categoryId,
+                scope = "GLOBAL",
+                createdAtMillis = System.currentTimeMillis()
+            )
+        )
+        logAudit("rule", id, "added", "Rule saved: messages containing '$trimmed' → $categoryId")
+        return id
+    }
+
+    suspend fun deleteCategoryRule(ruleId: String) {
+        spendingDao.deleteCategoryRuleById(ruleId)
+        logAudit("rule", ruleId, "deleted", "Category rule removed")
+    }
+
+    /** User rules → bundled keywords → uncategorized ("other"). */
+    private suspend fun suggestCategoryId(text: String): String {
+        if (text.isBlank()) return CategoryEntity.UNCATEGORIZED_ID
+        val rules = spendingDao.getAllCategoryRulesSnapshot().map {
+            CategoryRule(id = it.id, keyword = it.keyword, categoryId = it.categoryId, scope = it.scope)
+        }
+        val available = spendingDao.getAllCategoriesSnapshot().map { it.id }.toSet()
+        return CategorySuggester.suggest(text, rules, available)?.categoryId
+            ?: CategorySuggester.fallbackCategory()
+    }
+
+    // ------------------------------------------------------- recurring rules
+
+    fun observeRecurringRules(): Flow<List<RecurringRuleEntity>> =
+        spendingDao.observeRecurringRules()
+
+    suspend fun saveRecurringRule(
+        id: String?,
+        title: String,
+        amountCents: Long,
+        categoryId: String,
+        intervalDays: Int,
+        nextDueMillis: Long,
+        accountId: String = "",
+        isActive: Boolean = true
+    ): String {
+        val trimmed = title.trim()
+        require(trimmed.isNotEmpty()) { "Title cannot be empty" }
+        require(amountCents > 0L) { "Amount must be greater than zero" }
+        require(intervalDays > 0) { "Interval must be at least one day" }
+        val ruleId = id ?: "rec_${System.currentTimeMillis()}_${auditCounter.incrementAndGet()}"
+        spendingDao.upsertRecurringRule(
+            RecurringRuleEntity(
+                id = ruleId,
+                title = trimmed,
+                amountCents = amountCents,
+                categoryId = categoryId,
+                accountId = accountId,
+                intervalDays = intervalDays,
+                nextDueMillis = nextDueMillis,
+                isActive = isActive,
+                createdAtMillis = System.currentTimeMillis()
+            )
+        )
+        logAudit("recurring", ruleId, "added", "Recurring '$trimmed' every $intervalDays day(s) saved")
+        return ruleId
+    }
+
+    suspend fun deleteRecurringRule(ruleId: String) {
+        spendingDao.deleteRecurringRuleById(ruleId)
+        logAudit("recurring", ruleId, "deleted", "Recurring rule removed")
+    }
+
+    suspend fun setRecurringRuleActive(ruleId: String, active: Boolean) {
+        val rule = spendingDao.getAllRecurringRulesSnapshot().firstOrNull { it.id == ruleId }
+            ?: error("Unknown recurring rule $ruleId")
+        spendingDao.upsertRecurringRule(rule.copy(isActive = active))
+        logAudit(
+            "recurring", ruleId, if (active) "activated" else "paused",
+            (if (active) "Resumed " else "Paused ") + "'${rule.title}'"
+        )
+    }
+
+    /**
+     * User confirms a recurring payment happened: the real expense is recorded
+     * (that is what makes it an *actual*, distinct from the forecast) and the
+     * next due date advances by one interval.
+     */
+    suspend fun markRecurringPaid(ruleId: String, paidAtMillis: Long = System.currentTimeMillis()) {
+        val rule = spendingDao.getAllRecurringRulesSnapshot().firstOrNull { it.id == ruleId }
+            ?: error("Unknown recurring rule $ruleId")
+        val account = rule.accountId.takeIf { it.isNotBlank() }?.let { spendingDao.findAccountById(it) }
+        val method = when (account?.let { runCatching { AccountKind.valueOf(it.type) }.getOrNull() }) {
+            AccountKind.BANK -> PaymentMethod.BANK_TRANSFER
+            AccountKind.WALLET -> PaymentMethod.MOBILE_WALLET
+            AccountKind.CARD -> PaymentMethod.CREDIT_CARD
+            AccountKind.CASH -> PaymentMethod.CASH
+            null -> PaymentMethod.CASH
+        }
+        spendingDao.upsertExpense(
+            ExpenseEntity(
+                title = rule.title,
+                amountCents = rule.amountCents,
+                categoryId = rule.categoryId,
+                paymentMethod = method.id,
+                timestampEpochMillis = paidAtMillis,
+                accountId = rule.accountId,
+                isRecurring = true,
+                source = SOURCE_MANUAL
+            )
+        )
+        spendingDao.upsertRecurringRule(
+            rule.copy(
+                lastPaidMillis = paidAtMillis,
+                nextDueMillis = rule.nextDueMillis + rule.intervalDays * 86_400_000L
+            )
+        )
+        logAudit(
+            "recurring", ruleId, "paid",
+            "'${rule.title}' marked paid: real expense of ${rule.amountCents} minor units recorded " +
+                "and the next due date advanced (forecasts remain forecasts)"
+        )
+    }
+
+    // ---------------------------------------------------------- savings goals
+
+    fun observeSavingsGoals(): Flow<List<SavingsGoalEntity>> = spendingDao.observeSavingsGoals()
+
+    fun observeGoalContributions(): Flow<List<GoalContributionEntity>> =
+        spendingDao.observeGoalContributions()
+
+    suspend fun saveSavingsGoal(
+        id: String?,
+        title: String,
+        targetCents: Long,
+        deadlineMillis: Long?,
+        linkedAccountId: String = ""
+    ): String {
+        val trimmed = title.trim()
+        require(trimmed.isNotEmpty()) { "Goal title cannot be empty" }
+        require(targetCents > 0L) { "Goal target must be greater than zero" }
+        val goalId = id ?: "goal_${System.currentTimeMillis()}_${auditCounter.incrementAndGet()}"
+        spendingDao.upsertSavingsGoal(
+            SavingsGoalEntity(
+                id = goalId,
+                title = trimmed,
+                targetCents = targetCents,
+                deadlineMillis = deadlineMillis,
+                linkedAccountId = linkedAccountId,
+                createdAtMillis = System.currentTimeMillis()
+            )
+        )
+        logAudit(
+            "goal", goalId, "added",
+            "Savings goal '$trimmed' (target ${targetCents} minor units) saved"
+        )
+        return goalId
+    }
+
+    suspend fun deleteSavingsGoal(goalId: String) {
+        spendingDao.deleteContributionsForGoal(goalId)
+        spendingDao.deleteSavingsGoalById(goalId)
+        logAudit("goal", goalId, "deleted", "Savings goal and its contributions removed")
+    }
+
+    suspend fun addGoalContribution(
+        goalId: String,
+        amountCents: Long,
+        accountId: String = "",
+        note: String = "",
+        timestampEpochMillis: Long = System.currentTimeMillis()
+    ): Long {
+        require(amountCents > 0L) { "Contribution must be greater than zero" }
+        require(spendingDao.getAllSavingsGoalsSnapshot().any { it.id == goalId }) {
+            "Unknown savings goal"
+        }
+        val id = spendingDao.insertGoalContribution(
+            GoalContributionEntity(
+                goalId = goalId,
+                amountCents = amountCents,
+                accountId = accountId,
+                timestampEpochMillis = timestampEpochMillis,
+                note = note.trim()
+            )
+        )
+        logAudit(
+            "goal", goalId, "contributed",
+            "Contributed ${amountCents} minor units toward the goal (progress label only — " +
+                "the money stays in its account, balances are unchanged)"
+        )
+        return id
+    }
+
+    suspend fun deleteGoalContribution(contributionId: Long) {
+        spendingDao.deleteGoalContributionById(contributionId)
+        logAudit("goal", contributionId.toString(), "corrected", "Goal contribution removed")
     }
 
     companion object {
@@ -371,8 +1354,19 @@ class SpendingRepository(
             CategoryEntity("other", "Other", CategoryEntity.ICON_OTHER, 0xFF161614, 100, false)
         )
 
+        /** Row source labels: machine-imported vs typed by hand. */
+        const val SOURCE_SMS = "SMS"
+        const val SOURCE_MANUAL = "MANUAL"
+
         private const val PREFS_NAME = "kanso_local_prefs"
         private const val KEY_CURRENCY_SYMBOL = "currency_symbol"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_SMS_ENABLED = "sms_enabled"
+        private const val KEY_SMS_MODE = "sms_import_mode"
+        private const val KEY_NOTIF_DETECTED = "notif_detected"
+        private const val KEY_NOTIF_BUDGET = "notif_budget"
+        private const val KEY_NOTIF_RECONCILE = "notif_reconcile"
+        private const val KEY_NOTIF_RECURRING = "notif_recurring"
+        private const val KEY_APP_LOCK = "app_lock_enabled"
     }
 }
