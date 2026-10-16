@@ -16,9 +16,58 @@ package com.kanso.spending.domain.sms
  */
 object SmsAccessPolicy {
 
+    const val PERMISSION_READ_SMS = "android.permission.READ_SMS"
+    const val PERMISSION_RECEIVE_SMS = "android.permission.RECEIVE_SMS"
+    const val PERMISSION_POST_NOTIFICATIONS = "android.permission.POST_NOTIFICATIONS"
+
     /** Live processing gate used by [com.kanso.spending.sms.SmsBroadcastReceiver]. */
     fun shouldProcessIncoming(smsEnabled: Boolean, hasReceiveSmsPermission: Boolean): Boolean =
         smsEnabled && hasReceiveSmsPermission
+
+    /**
+     * True only when it is safe to fire a permission request for the FIRST time.
+     * A permission the user has already been asked for is never auto-requested
+     * again — refusing a prompt must not lead to a repeat prompt.
+     */
+    fun shouldRequestPermission(granted: Boolean, previouslyAttempted: Boolean): Boolean =
+        !granted && !previouslyAttempted
+
+    /**
+     * True when Android will no longer show the system dialog for this
+     * permission ("don't ask again", or a prior denial on API 30+). Such a
+     * permission must never be re-requested programmatically; the UI should
+     * point the user at Android Settings instead.
+     */
+    fun isPermanentlyDenied(
+        granted: Boolean,
+        previouslyAttempted: Boolean,
+        canShowRequestRationale: Boolean
+    ): Boolean = previouslyAttempted && !granted && !canShowRequestRationale
+
+    /**
+     * The next optional permission the first-launch setup chain should request,
+     * or null when the chain is complete. RECEIVE_SMS follows the user's
+     * explicit tap; POST_NOTIFICATIONS is optional and only on API 33+. Each
+     * permission is requested at most once (guarded by its attempted flag), so a
+     * denial is never re-prompted automatically.
+     */
+    fun nextSetupPermission(
+        notificationsSupported: Boolean,
+        receiveGranted: Boolean,
+        receiveAttempted: Boolean,
+        notificationsGranted: Boolean,
+        notificationsAttempted: Boolean
+    ): String? {
+        if (shouldRequestPermission(receiveGranted, receiveAttempted)) {
+            return PERMISSION_RECEIVE_SMS
+        }
+        if (notificationsSupported &&
+            shouldRequestPermission(notificationsGranted, notificationsAttempted)
+        ) {
+            return PERMISSION_POST_NOTIFICATIONS
+        }
+        return null
+    }
 
     /** History reads happen only with an explicit, still-valid READ_SMS grant. */
     fun canReadHistory(hasReadSmsPermission: Boolean): Boolean = hasReadSmsPermission

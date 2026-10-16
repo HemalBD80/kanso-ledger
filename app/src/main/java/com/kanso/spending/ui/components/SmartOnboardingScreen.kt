@@ -2,10 +2,11 @@ package com.kanso.spending.ui.components
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import android.provider.Settings
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -20,6 +21,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.kanso.spending.domain.sms.SmsAccessPolicy
 import com.kanso.spending.ui.SmartLedgerActions
 
@@ -50,6 +54,8 @@ fun SmartOnboardingScreen(
 
     var step by rememberSaveable { mutableStateOf("welcome") }
     var readAttempted by rememberSaveable { mutableStateOf(false) }
+    var receiveAttempted by rememberSaveable { mutableStateOf(false) }
+    var notifAttempted by rememberSaveable { mutableStateOf(false) }
     var readGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) ==
@@ -62,6 +68,10 @@ fun SmartOnboardingScreen(
                 PackageManager.PERMISSION_GRANTED
         )
     }
+    var notifGranted by remember { mutableStateOf(false) }
+    // True while the READ→RECEIVE→NOTIF chain is running, so the ON_RESUME
+    // refresh (e.g. returning from Settings) never interrupts a live dialog.
+    var chainInFlight by remember { mutableStateOf(false) }
     var accessNote by remember { mutableStateOf<String?>(null) }
 
     fun hasRead() = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) ==
@@ -75,6 +85,7 @@ fun SmartOnboardingScreen(
 
     /** After the permission chain: enable only when access actually exists. */
     fun settleAccess() {
+        chainInFlight = false
         readGranted = hasRead()
         receiveGranted = hasReceive()
         val anyGranted = readGranted || receiveGranted
@@ -91,23 +102,69 @@ fun SmartOnboardingScreen(
         }
     }
 
-    val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        settleAccess()
+    // Returning from Android Settings: refresh the real permission state so the
+    // UI never shows a stale grant/denial, and re-evaluate the access step — but
+    // never while a permission chain is still running (resume can race a live
+    // dialog's result dispatch).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                readGranted = hasRead()
+                receiveGranted = hasReceive()
+                if (step == "access" && !chainInFlight && (readAttempted || receiveAttempted)) {
+                    settleAccess()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    val receiveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        receiveGranted = granted
-        if (Build.VERSION.SDK_INT >= 33) {
-            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+
+    // Strictly sequential, lifecycle-safe permission requests. Each launch runs
+    // from a LaunchedEffect (next frame, outside result dispatch) so the
+    // ActivityResultRegistry is never re-entered — the fix for the v2.1.0 crash.
+    // A deferred holder avoids a self-reference inside the result callback.
+    var requesterHolder: SequentialPermissionRequester? = null
+    val permissionRequester = rememberSequentialPermissionRequester { permission, granted ->
+        when (permission) {
+            Manifest.permission.READ_SMS -> {
+                readAttempted = true
+                readGranted = granted
+            }
+            Manifest.permission.RECEIVE_SMS -> {
+                receiveAttempted = true
+                receiveGranted = granted
+            }
+            else -> {
+                notifGranted = granted
+                notifAttempted = true
+            }
+        }
+        val next = SmsAccessPolicy.nextSetupPermission(
+            notificationsSupported = Build.VERSION.SDK_INT >= 33,
+            receiveGranted = hasReceive(),
+            receiveAttempted = receiveAttempted,
+            notificationsGranted = notifGranted,
+            notificationsAttempted = notifAttempted
+        )
+        if (next != null) {
+            requesterHolder?.request(next)
         } else {
             settleAccess()
         }
     }
-    val readLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        readAttempted = true
-        readGranted = granted
-        // Always follow with the incoming-message permission (explicit chain
-        // from one user tap — never a silent grant attempt).
-        receiveLauncher.launch(Manifest.permission.RECEIVE_SMS)
+    requesterHolder = permissionRequester
+
+    fun openAppSettings() {
+        runCatching {
+            context.startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", context.packageName, null)
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
     }
 
     Surface(
@@ -206,11 +263,30 @@ fun SmartOnboardingScreen(
                     }
 
                     Button(
-                        onClick = { readLauncher.launch(Manifest.permission.READ_SMS) },
+                        onClick = {
+                            // Explicit user action — the only trigger for a
+                            // permission request. Requests are queued and
+                            // launched one frame later, never from inside a
+                            // result callback (the v2.1.0 crash).
+                            chainInFlight = true
+                            permissionRequester.request(Manifest.permission.READ_SMS)
+                        },
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Text("GRANT SMS ACCESS", style = MaterialTheme.typography.labelLarge)
+                    }
+
+                    if (permanentlyDenied()) {
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = { openAppSettings() },
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, colors.hairlineBorder)
+                        ) {
+                            Text("OPEN ANDROID SETTINGS", style = MaterialTheme.typography.labelLarge)
+                        }
                     }
 
                     if (readAttempted && !readGranted) {

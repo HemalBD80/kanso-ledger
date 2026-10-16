@@ -105,7 +105,10 @@ Currency is **Bangladeshi Taka (৳)** by default and everything starts at **৳
 
 ```
 First launch: SmartOnboardingScreen (shown once) — welcome & privacy → two explicit
-        choices (enable Smart SMS / continue without SMS) → permission taps → initial
+        choices (enable Smart SMS / continue without SMS) → permission taps (READ_SMS,
+        then RECEIVE_SMS, then optional POST_NOTIFICATIONS — requested strictly one at a
+        time via a state-driven launcher, never re-prompted after a denial; permanent
+        denial offers "Open Android Settings"; returning from Settings refreshes state) → initial
         history import with preview + duplicate inspection + auto-vs-review choice
 Dashboard
 ├── Balance strip (available balance = net funds, money in • month, expenses • month)
@@ -198,7 +201,7 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 3. `./gradlew test` — run the unit tests
 4. `./gradlew assembleRelease` — produce the APK at `app/build/outputs/apk/release/`
 
-> **Local host note**: this workspace is aarch64 Linux while Google's `aapt2`/`d8`/`r8` launchers ship x86-64 only, so builds happen in CI. Use the GitHub Actions workflow below. The pure Kotlin domain + data layer compiles and tests locally (JDK 17 + kotlinc, 153 tests); the Compose/Room-processor layer is verified by CI.
+> **Local host note**: this workspace is aarch64 Linux while Google's `aapt2`/`d8`/`r8` launchers ship x86-64 only, so builds happen in CI. Use the GitHub Actions workflow below. The pure Kotlin domain + data layer compiles and tests locally (JDK 17 + kotlinc, 158 tests); the Compose/Room-processor layer is verified by CI.
 
 ## 9. GitHub Actions build & release
 
@@ -230,7 +233,7 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 ./gradlew test
 ```
 
-**153 locally verified tests** (JDK 17 + kotlinc, same sources CI builds) covering: analytics totals, zero-budget truthfulness, report ranges & boundaries, the v2 report contract (fees separable yet debited, transfers excluded from income/expense, SMS-vs-manual origin counts, pending counted-but-never-money, refund breakout, reconciliation + account sections in CSV, transfer-fee balance agreement), refund single-counting, CSV totals reconciliation, category seed integrity, payment methods + legacy ids, keypad math, **SMS parsing on fictional fixtures only** (incl. recharge, utility bills, data packages), **ingest planning (dedup fingerprints, modes, balance-only, account resolution, historical re-import idempotency in both modes, duplicate notices)**, **SMS access policy (feature off / permission denied / revoked → processing gated, records untouched)**, **account state factory (fees, method fallback, transfers net-zero, pending isolation, reconciliation)**, recurring detection & forecasts, savings-goal projections, calendar day/week/month sums, insights inputs.
+**158 locally verified tests** (JDK 17 + kotlinc, same sources CI builds) covering: analytics totals, zero-budget truthfulness, report ranges & boundaries, the v2 report contract (fees separable yet debited, transfers excluded from income/expense, SMS-vs-manual origin counts, pending counted-but-never-money, refund breakout, reconciliation + account sections in CSV, transfer-fee balance agreement), refund single-counting, CSV totals reconciliation, category seed integrity, payment methods + legacy ids, keypad math, **SMS parsing on fictional fixtures only** (incl. recharge, utility bills, data packages), **ingest planning (dedup fingerprints, modes, balance-only, account resolution, historical re-import idempotency in both modes, duplicate notices)**, **SMS access policy (feature off / permission denied / revoked → processing gated, records untouched; setup chain asks each permission once and never re-prompts a denial; permanent denial detected for the Settings path)**, **account state factory (fees, method fallback, transfers net-zero, pending isolation, reconciliation)**, recurring detection & forecasts, savings-goal projections, calendar day/week/month sums, insights inputs.
 
 **Not covered (disclosed)**: Room migrations (`1→2`, `2→3`) execute on Android — no JVM harness exists for them here; PDF rendering and the Compose UI compile only in CI (`android.graphics.pdf` / Compose cannot be unit-tested on JVM); SMS inbox reading, broadcast delivery and BiometricPrompt are runtime behaviours that require a device.
 

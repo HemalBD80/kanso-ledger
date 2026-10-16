@@ -3,8 +3,6 @@ package com.kanso.spending.ui.components
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -54,19 +52,32 @@ fun SmartSmsSheet(
     val context = LocalContext.current
 
     var permissionNote by remember { mutableStateOf<String?>(null) }
-    val smsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        permissionNote = if (granted) {
-            "SMS access granted. Messages are read on this device only."
-        } else {
-            "SMS access denied — you can still paste messages or share them into the app."
-        }
-    }
-    val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-
-    var pasteText by remember { mutableStateOf("") }
 
     fun hasSmsPermission() = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) ==
         PackageManager.PERMISSION_GRANTED
+
+    // Strictly sequential requests: READ_SMS first, then (optionally) the
+    // notification permission — each launched from a LaunchedEffect on the next
+    // frame, never two overlapping launches from one click handler (the v2.1.0
+    // defect). A deferred holder avoids a self-reference inside the callback.
+    var requesterHolder: SequentialPermissionRequester? = null
+    val permissionRequester = rememberSequentialPermissionRequester { permission, granted ->
+        if (permission == Manifest.permission.READ_SMS) {
+            permissionNote = if (granted) {
+                "SMS access granted. Messages are read on this device only."
+            } else {
+                "SMS access denied — you can still paste messages or share them into the app."
+            }
+        }
+        // Follow with the optional notification permission only when SMS was
+        // granted and it is still worth asking (never re-ask after a denial).
+        if (permission == Manifest.permission.READ_SMS && granted && Build.VERSION.SDK_INT >= 33) {
+            requesterHolder?.request(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    requesterHolder = permissionRequester
+
+    var pasteText by remember { mutableStateOf("") }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = colors.surface, contentColor = colors.inkPrimary) {
         Column(
@@ -106,11 +117,10 @@ fun SmartSmsSheet(
                         checked = smartState.smartSettings.smsEnabled,
                         onCheckedChange = { enabled ->
                             actions.onSetSmsEnabled(enabled)
-                            if (enabled) {
-                                smsLauncher.launch(Manifest.permission.READ_SMS)
-                                if (Build.VERSION.SDK_INT >= 33) {
-                                    notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                }
+                            if (enabled && !hasSmsPermission()) {
+                                // Only when actually missing; requests are queued
+                                // and launched sequentially, one frame later.
+                                permissionRequester.request(Manifest.permission.READ_SMS)
                             }
                         },
                         colors = SwitchDefaults.colors(checkedTrackColor = colors.positiveAccent)
