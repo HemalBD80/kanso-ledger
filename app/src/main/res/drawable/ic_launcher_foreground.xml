@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Minimalist Swiss Ledger Geometric Mark -->
+    <path
+        android:fillColor="#F6F3EC"
+        android:pathData="M30,30h48v8h-48zM30,46h32v8h-32zM30,62h48v16h-48z" />
+    <path
+        android:fillColor="#C84B31"
+        android:pathData="M66,46h12v8h-12z" />
+</vector>
