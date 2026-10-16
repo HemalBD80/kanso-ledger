@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.kanso.spending.data.local.entity.CategoryBudgetEntity
 import com.kanso.spending.data.local.entity.ExpenseEntity
+import com.kanso.spending.data.local.entity.MonthlyBudgetEntity
 import com.kanso.spending.data.model.PaymentMethod
 import com.kanso.spending.data.model.SpendingCategory
 import com.kanso.spending.data.repository.LedgerThemeMode
