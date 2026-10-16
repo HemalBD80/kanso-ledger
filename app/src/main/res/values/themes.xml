@@ -1,7 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      Base window theme. The Ubuntu font family (@font/ubuntu_font_family) is the
+      default typeface for every view inflated from XML (dialogs, system popups,
+      splash/window background text). Compose surfaces get the same family through
+      ui/theme/Type.kt (KansoTypography), which is supplied by KansoSpendingTheme.
+    -->
     <style name="Theme.KansoSpendingTracker" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">@font/ubuntu_font_family</item>
+        <item name="android:windowIsTranslucent">false</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 </resources>
+

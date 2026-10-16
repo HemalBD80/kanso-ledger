@@ -26,7 +26,7 @@ object SpendingAnalyticsEngine {
         zoneId: ZoneId = ZoneId.systemDefault()
     ): MonthlyLedgerAnalytics {
         val totalSpent = monthExpenses.sumOf { it.amountCents }
-        val budget = if (monthlyBudgetCents > 0L) monthlyBudgetCents else 180_000L
+        val budget = if (monthlyBudgetCents > 0L) monthlyBudgetCents else 1L
         val remaining = budget - totalSpent
         val daysInMonth = yearMonth.lengthOfMonth()
         val currentMonth = YearMonth.from(today)

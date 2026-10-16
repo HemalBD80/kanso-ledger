@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Ubuntu typeface family (UFL licensed, from the Ubuntu Font Family project).
+    Wire-up map (Compose + XML theme):
+      weight 400 = Regular   -> body text, captions, input text
+      weight 700 = Bold      -> headings, titles, key figures
+      style  italic          -> emphasis / annotations (Italic @400, BoldItalic @700)
+    Referenced from ui/theme/Type.kt (KansoTypography) and res/values/themes.xml.
+-->
+<font-family xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <font
+        android:fontStyle="normal"
+        android:fontWeight="400"
+        android:font="@font/ubuntu_regular" />
+
+    <font
+        android:fontStyle="normal"
+        android:fontWeight="700"
+        android:font="@font/ubuntu_bold" />
+
+    <font
+        android:fontStyle="italic"
+        android:fontWeight="400"
+        android:font="@font/ubuntu_italic" />
+
+    <font
+        android:fontStyle="italic"
+        android:fontWeight="700"
+        android:font="@font/ubuntu_bold_italic" />
+
+</font-family>

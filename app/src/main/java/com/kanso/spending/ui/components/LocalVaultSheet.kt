@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import com.kanso.spending.ui.theme.LocalKansoColors
 
@@ -22,7 +23,6 @@ fun LocalVaultSheet(
     statusMessage: String?,
     onGenerateBackupJson: () -> Unit,
     onImportBackupJson: (String) -> Unit,
-    onSeedSampleLedger: () -> Unit,
     onWipeAllLocalData: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -42,9 +42,16 @@ fun LocalVaultSheet(
             Text("On-Device SQLite Vault", style = MaterialTheme.typography.headlineMedium, color = colors.inkPrimary)
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "Kanso requests zero internet permissions. All transactions and budgets live exclusively in your phone's local Room SQLite database.",
+                text = "Kanso requests zero internet permissions. Every transaction and budget you enter lives exclusively in this phone's local SQLite vault.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.inkSecondary
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = "Export a JSON snapshot any time to keep an off-device copy.",
+                style = MaterialTheme.typography.bodySmall,
+                fontStyle = FontStyle.Italic,
+                color = colors.inkMuted
             )
 
             if (!statusMessage.isNullOrBlank()) {
@@ -62,24 +69,15 @@ fun LocalVaultSheet(
             }
 
             Spacer(Modifier.height(16.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        onGenerateBackupJson()
-                        if (backupJsonPreview.isNotBlank()) clipboard.setText(AnnotatedString(backupJsonPreview))
-                    },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("COPY JSON BACKUP", style = MaterialTheme.typography.labelSmall)
-                }
-                OutlinedButton(
-                    onClick = onSeedSampleLedger,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("LOAD DEMO LEDGER", style = MaterialTheme.typography.labelSmall)
-                }
+            OutlinedButton(
+                onClick = {
+                    onGenerateBackupJson()
+                    if (backupJsonPreview.isNotBlank()) clipboard.setText(AnnotatedString(backupJsonPreview))
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("COPY JSON BACKUP", style = MaterialTheme.typography.labelSmall)
             }
 
             Spacer(Modifier.height(14.dp))

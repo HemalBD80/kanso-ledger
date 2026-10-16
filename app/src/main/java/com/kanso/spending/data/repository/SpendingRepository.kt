@@ -124,31 +124,11 @@ class SpendingRepository(
         spendingDao.wipeAllLocalData()
     }
 
-    suspend fun ensureInitialSeedIfNeeded() {
-        val alreadySeeded = prefs.getBoolean(KEY_INITIAL_SEED_DONE, false)
-        if (alreadySeeded) return
-        prefs.edit().putBoolean(KEY_INITIAL_SEED_DONE, true).apply()
-        if (spendingDao.getExpenseCount() == 0) {
-            seedSampleMonthData(YearMonth.now())
-        }
-    }
-
-    suspend fun seedSampleMonthData(targetMonth: YearMonth = YearMonth.now()) {
-        spendingDao.insertExpenses(SampleLedgerSeeder.buildSampleExpenses(targetMonth))
-        spendingDao.upsertMonthlyBudget(
-            MonthlyBudgetEntity(
-                monthKey = targetMonth.toString(),
-                overallLimitCents = 180_000L
-            )
-        )
-        spendingDao.insertCategoryBudgets(SampleLedgerSeeder.buildDefaultCategoryBudgets(targetMonth))
-    }
-
     companion object {
+        /** Neutral starting cap applied when the user has not saved a budget for the month yet. */
         const val DEFAULT_MONTHLY_BUDGET_CENTS: Long = 180_000L
         private const val PREFS_NAME = "kanso_local_prefs"
         private const val KEY_CURRENCY_SYMBOL = "currency_symbol"
         private const val KEY_THEME_MODE = "theme_mode"
-        private const val KEY_INITIAL_SEED_DONE = "initial_seed_done"
     }
 }

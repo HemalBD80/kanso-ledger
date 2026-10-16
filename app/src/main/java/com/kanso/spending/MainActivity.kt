@@ -37,7 +37,6 @@ class MainActivity : ComponentActivity() {
                     onSaveBudgetConfig = viewModel::saveBudgetConfiguration,
                     onGenerateBackupJson = viewModel::generateLocalBackupJson,
                     onImportBackupJson = viewModel::importLocalBackupJson,
-                    onSeedSampleLedger = viewModel::reseedSampleLedger,
                     onWipeAllLocalData = viewModel::wipeAllLocalData,
                     onClearVaultMessage = viewModel::clearVaultStatusMessage
                 )

@@ -54,7 +54,7 @@ fun DailyRhythmChart(
                 Spacer(Modifier.height(2.dp))
                 val subtitle = inspectedBar?.let {
                     "${it.date.format(shortDateFormatter).uppercase(Locale.US)} • ${CurrencyFormatter.formatCents(it.spentCents, currencySymbol)}"
-                } ?: "Tap any bar to inspect"
+                } ?: "Select a bar to inspect its daily total"
                 Text(subtitle, style = MaterialTheme.typography.titleMedium, color = colors.inkPrimary)
             }
             Column(horizontalAlignment = Alignment.End) {
@@ -112,7 +112,7 @@ fun DailyRhythmChart(
         Spacer(Modifier.height(6.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("DAY 01", style = MaterialTheme.typography.labelSmall, color = colors.inkMuted)
-            Text("DAY 15", style = MaterialTheme.typography.labelSmall, color = colors.inkMuted)
+            Text("MID-MONTH", style = MaterialTheme.typography.labelSmall, color = colors.inkMuted)
             Text("DAY ${dailyBars.size.toString().padStart(2, '0')}", style = MaterialTheme.typography.labelSmall, color = colors.inkMuted)
         }
     }

@@ -15,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import com.kanso.spending.data.local.entity.ExpenseEntity
 import com.kanso.spending.data.model.PaymentMethod
@@ -36,7 +37,6 @@ fun SpendingDashboardScreen(
     onSaveBudgetConfig: (Long, String, Map<SpendingCategory, Long>) -> Unit,
     onGenerateBackupJson: () -> Unit,
     onImportBackupJson: (String) -> Unit,
-    onSeedSampleLedger: () -> Unit,
     onWipeAllLocalData: () -> Unit,
     onClearVaultMessage: () -> Unit
 ) {
@@ -166,7 +166,6 @@ fun SpendingDashboardScreen(
             statusMessage = uiState.vaultStatusMessage,
             onGenerateBackupJson = onGenerateBackupJson,
             onImportBackupJson = onImportBackupJson,
-            onSeedSampleLedger = onSeedSampleLedger,
             onWipeAllLocalData = onWipeAllLocalData,
             onDismiss = {
                 onClearVaultMessage()
@@ -267,24 +266,25 @@ private fun EmptyLedgerNotice(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = if (hasActiveFilter) "NO MATCHING LEDGER ENTRIES" else "CLEAN MONTHLY SLATE",
-            style = MaterialTheme.typography.labelLarge,
-            color = colors.inkSecondary
+            text = if (hasActiveFilter) "NO MATCHING ENTRIES" else "NO ENTRIES YET",
+            style = MaterialTheme.typography.titleMedium,
+            color = colors.inkPrimary
         )
         Spacer(Modifier.height(6.dp))
         Text(
             text = if (hasActiveFilter) {
-                "No local transactions match your current category or search query."
+                "Nothing in this month's local ledger matches the current filter."
             } else {
-                "Tap 'RECORD EXPENSE' below to log your first local transaction for this month."
+                "This month has no recorded spending. Use RECORD EXPENSE to add your first entry."
             },
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall,
+            fontStyle = FontStyle.Italic,
             color = colors.inkMuted
         )
         if (hasActiveFilter) {
             Spacer(Modifier.height(12.dp))
             OutlinedButton(onClick = onClearFilters, shape = RoundedCornerShape(10.dp)) {
-                Text("RESET FILTERS", style = MaterialTheme.typography.labelSmall)
+                Text("CLEAR FILTERS", style = MaterialTheme.typography.labelSmall)
             }
         }
     }

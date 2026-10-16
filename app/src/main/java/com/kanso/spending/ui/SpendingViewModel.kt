@@ -7,6 +7,7 @@ import com.kanso.spending.data.local.entity.CategoryBudgetEntity
 import com.kanso.spending.data.local.entity.ExpenseEntity
 import com.kanso.spending.data.model.PaymentMethod
 import com.kanso.spending.data.model.SpendingCategory
+import com.kanso.spending.data.repository.LedgerThemeMode
 import com.kanso.spending.data.repository.SpendingRepository
 import com.kanso.spending.domain.BudgetPacingStatus
 import com.kanso.spending.domain.MonthlyLedgerAnalytics
@@ -14,9 +15,13 @@ import com.kanso.spending.domain.SpendingAnalyticsEngine
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.time.LocalDate
 import java.time.YearMonth
 
+/**
+ * Single source of truth for the dashboard. Every number in the UI is derived
+ * straight from the on-device Room database, so a fresh install always shows a
+ * genuinely empty ledger until the user records their own spending.
+ */
 data class SpendingDashboardUiState(
     val selectedMonth: YearMonth = YearMonth.now(),
     val currencySymbol: String = "$",
@@ -28,9 +33,9 @@ data class SpendingDashboardUiState(
         totalSpentCents = 0L,
         monthlyBudgetCents = SpendingRepository.DEFAULT_MONTHLY_BUDGET_CENTS,
         remainingBudgetCents = SpendingRepository.DEFAULT_MONTHLY_BUDGET_CENTS,
-        dailySafeToSpendCents = 6000L,
+        dailySafeToSpendCents = 0L,
         averageDailyBurnCents = 0L,
-        dailyTargetCents = 6000L,
+        dailyTargetCents = 0L,
         budgetProgressFraction = 0f,
         monthElapsedFraction = 0f,
         pacingStatus = BudgetPacingStatus.ON_TRACK,
@@ -55,69 +60,79 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
     private val backupJsonPreview = MutableStateFlow("")
     private val vaultStatusMessage = MutableStateFlow<String?>(null)
 
-    init {
-        viewModelScope.launch { repository.ensureInitialSeedIfNeeded() }
-    }
-
-    private val monthDataFlow = selectedMonth.flatMapLatest { ym ->
-        combine(
-            repository.observeExpensesForMonth(ym),
-            repository.observeMonthlyBudget(ym),
-            repository.observeCategoryBudgets(ym),
-            repository.currencySymbol
-        ) { expenses, monthlyBudget, catBudgets, currency ->
-            MonthSnapshot(
-                yearMonth = ym,
-                expenses = expenses,
-                monthlyLimitCents = monthlyBudget?.overallLimitCents ?: SpendingRepository.DEFAULT_MONTHLY_BUDGET_CENTS,
-                currencySymbol = currency,
-                catBudgets = catBudgets
-            )
-        }
-    }
-
     val uiState: StateFlow<SpendingDashboardUiState> = combine(
-        monthDataFlow,
+        selectedMonth,
+        repository.currencySymbol,
         selectedCategory,
         searchQuery,
         isDarkTheme,
-        combine(backupJsonPreview, vaultStatusMessage) { json, msg -> json to msg }
-    ) { snap, catFilter, query, dark, (json, msg) ->
-        val trimmedQuery = query.trim().lowercase()
-        val filtered = snap.expenses.filter { exp ->
-            val matchesCat = catFilter == null || exp.categoryId.equals(catFilter.id, ignoreCase = true)
-            val matchesQuery = trimmedQuery.isEmpty() ||
-                exp.title.lowercase().contains(trimmedQuery) ||
-                exp.note.lowercase().contains(trimmedQuery) ||
-                exp.categoryId.lowercase().contains(trimmedQuery)
-            matchesCat && matchesQuery
+        backupJsonPreview,
+        vaultStatusMessage,
+        selectedMonth.flatMapLatest { month ->
+            repository.observeMonthlyBudget(month)
+        },
+        selectedMonth.flatMapLatest { month ->
+            repository.observeCategoryBudgets(month)
+        },
+        selectedMonth.flatMapLatest { month ->
+            repository.observeExpensesForMonth(month)
         }
+    ) { args ->
+        @Suppress("UNCHECKED_CAST")
+        val snap = MonthSnapshot(
+            yearMonth = args[0] as YearMonth,
+            currencySymbol = args[1] as String,
+            catFilter = args[2] as SpendingCategory?,
+            query = args[3] as String,
+            dark = args[4] as Boolean,
+            json = args[5] as String,
+            msg = args[6] as String?,
+            monthlyBudgetCents = (args[7] as? MonthlyBudgetEntity)?.overallLimitCents
+                ?: SpendingRepository.DEFAULT_MONTHLY_BUDGET_CENTS,
+            catBudgets = args[8] as List<CategoryBudgetEntity>,
+            expenses = args[9] as List<ExpenseEntity>
+        )
+
+        val query = snap.query.trim()
+        val filtered = snap.expenses.filter { expense ->
+            val matchesCategory = snap.catFilter == null ||
+                SpendingCategory.fromId(expense.categoryId) == snap.catFilter
+            val matchesQuery = query.isEmpty() ||
+                expense.title.contains(query, ignoreCase = true) ||
+                expense.note.contains(query, ignoreCase = true) ||
+                SpendingCategory.fromId(expense.categoryId).displayName.contains(query, ignoreCase = true)
+            matchesCategory && matchesQuery
+        }
+
         val analytics = SpendingAnalyticsEngine.computeMonthlyAnalytics(
             yearMonth = snap.yearMonth,
             monthExpenses = snap.expenses,
             filteredExpenses = filtered,
-            monthlyBudgetCents = snap.monthlyLimitCents,
-            categoryBudgets = snap.catBudgets,
-            today = LocalDate.now()
+            monthlyBudgetCents = snap.monthlyBudgetCents,
+            categoryBudgets = snap.catBudgets
         )
+
         SpendingDashboardUiState(
             selectedMonth = snap.yearMonth,
             currencySymbol = snap.currencySymbol,
-            selectedCategoryFilter = catFilter,
-            searchQuery = query,
-            isDarkTheme = dark,
+            selectedCategoryFilter = snap.catFilter,
+            searchQuery = snap.query,
+            isDarkTheme = snap.dark,
             analytics = analytics,
-            backupJsonPreview = json,
-            vaultStatusMessage = msg
+            backupJsonPreview = snap.json,
+            vaultStatusMessage = snap.msg
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SpendingDashboardUiState())
 
     fun selectPreviousMonth() { selectedMonth.update { it.minusMonths(1) } }
     fun selectNextMonth() { selectedMonth.update { it.plusMonths(1) } }
+
     fun toggleCategoryFilter(category: SpendingCategory?) {
         selectedCategory.update { if (it == category) null else category }
     }
+
     fun updateSearchQuery(query: String) { searchQuery.value = query }
+
     fun toggleDarkTheme() { isDarkTheme.update { !it } }
 
     fun saveExpense(
@@ -162,36 +177,34 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
             categoryLimits.forEach { (cat, cents) ->
                 repository.saveCategoryBudget(ym, cat, cents)
             }
+            vaultStatusMessage.value = "Budget saved to your on-device ledger."
         }
     }
 
     fun generateLocalBackupJson() {
         viewModelScope.launch {
-            backupJsonPreview.value = repository.exportLocalBackupJson()
-            vaultStatusMessage.value = "Local JSON snapshot ready (${backupJsonPreview.value.length} bytes)."
+            val json = repository.exportLocalBackupJson()
+            backupJsonPreview.value = json
+            vaultStatusMessage.value = "Snapshot ready \u2014 ${json.length} characters."
         }
     }
 
     fun importLocalBackupJson(rawJson: String) {
         viewModelScope.launch {
             repository.importLocalBackupJson(rawJson)
-                .onSuccess { count -> vaultStatusMessage.value = "Restored $count records into local SQLite." }
+                .onSuccess { count ->
+                    backupJsonPreview.value = ""
+                    vaultStatusMessage.value = "Restored $count records into the local vault."
+                }
                 .onFailure { e -> vaultStatusMessage.value = "Restore error: ${e.message}" }
-        }
-    }
-
-    fun reseedSampleLedger() {
-        viewModelScope.launch {
-            repository.wipeAllData()
-            repository.seedSampleMonthData(selectedMonth.value)
-            vaultStatusMessage.value = "Sample editorial ledger loaded into local SQLite."
         }
     }
 
     fun wipeAllLocalData() {
         viewModelScope.launch {
             repository.wipeAllData()
-            vaultStatusMessage.value = "All local SQLite tables wiped clean."
+            backupJsonPreview.value = ""
+            vaultStatusMessage.value = "Local vault wiped clean."
         }
     }
 
@@ -199,10 +212,15 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
 
     private data class MonthSnapshot(
         val yearMonth: YearMonth,
-        val expenses: List<ExpenseEntity>,
-        val monthlyLimitCents: Long,
         val currencySymbol: String,
-        val catBudgets: List<CategoryBudgetEntity>
+        val catFilter: SpendingCategory?,
+        val query: String,
+        val dark: Boolean,
+        val json: String,
+        val msg: String?,
+        val monthlyBudgetCents: Long,
+        val catBudgets: List<CategoryBudgetEntity>,
+        val expenses: List<ExpenseEntity>
     )
 
     class Factory(private val repository: SpendingRepository) : ViewModelProvider.Factory {

@@ -22,7 +22,7 @@ class SpendingAnalyticsEngineTest {
         val expenses = listOf(
             ExpenseEntity(
                 id = 1L,
-                title = "Blue Bottle Coffee",
+                title = "Corner Cafe",
                 amountCents = 650L,
                 categoryId = SpendingCategory.DINING.id,
                 paymentMethod = PaymentMethod.CARD.id,
@@ -30,7 +30,7 @@ class SpendingAnalyticsEngineTest {
             ),
             ExpenseEntity(
                 id = 2L,
-                title = "Trader Joe's Market",
+                title = "Neighbourhood Market",
                 amountCents = 8450L,
                 categoryId = SpendingCategory.GROCERIES.id,
                 paymentMethod = PaymentMethod.CARD.id,

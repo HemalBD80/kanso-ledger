@@ -34,14 +34,8 @@ interface SpendingDao {
     @Query("SELECT * FROM expenses ORDER BY timestamp_epoch_millis DESC, id DESC")
     suspend fun getAllExpensesSnapshot(): List<ExpenseEntity>
 
-    @Query("SELECT COUNT(*) FROM expenses")
-    suspend fun getExpenseCount(): Int
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertExpense(expense: ExpenseEntity): Long
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertExpenses(expenses: List<ExpenseEntity>)
 
     @Update
     suspend fun updateExpense(expense: ExpenseEntity)
@@ -102,7 +96,8 @@ interface SpendingDao {
         categoryBudgets: List<CategoryBudgetEntity>
     ) {
         wipeAllLocalData()
-        insertExpenses(expenses)
+        // Preserve the incoming record ids so a restored ledger round-trips exactly.
+        expenses.forEach { upsertExpense(it) }
         insertMonthlyBudgets(monthlyBudgets)
         insertCategoryBudgets(categoryBudgets)
     }
