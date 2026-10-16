@@ -92,7 +92,7 @@ class SpendingAnalyticsEngineTest {
                 id = 3L,
                 title = "Rickshaw Ride",
                 amountCents = 120_00L,
-                categoryId = SpendingCategory.TRANSPORT.id,
+                categoryId = SpendingCategory.TRANSIT.id,
                 paymentMethod = PaymentMethod.CASH.id,
                 timestampEpochMillis = day5Millis
             )
