@@ -105,9 +105,10 @@ fun SmartSmsSheet(
                         Text("Read incoming messages", style = MaterialTheme.typography.titleMedium, color = colors.inkPrimary)
                         Text(
                             "Why: only transaction messages (bKash, Nagad, Rocket, banks, cards) are parsed — " +
-                                "on this device, never uploaded. Message bodies are never stored, logged or " +
-                                "backed up; only fingerprints and extracted amounts are kept. Turning this off " +
-                                "leaves manual tracking untouched.",
+                                "on this device. Message bodies are never stored, logged or " +
+                                "backed up; only fingerprints and extracted amounts are kept. (Optional AI, " +
+                                "off by default, can send redacted text of ambiguous messages — see Settings.) " +
+                                "Turning this off leaves manual tracking untouched.",
                             style = MaterialTheme.typography.bodySmall,
                             color = colors.inkSecondary
                         )

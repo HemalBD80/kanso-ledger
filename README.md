@@ -1,6 +1,6 @@
 # Kanso Ledger — 100% Local Android Money Tracker (BDT)
 
-**Kanso Ledger** is a native Android personal finance tracker written in **Kotlin** and **Jetpack Compose**, engineered with **100% local on-device SQLite persistence (AndroidX Room)** and a tactile **Swiss editorial paper & Obsidian Ink** UI. Every transaction, balance, forecast and report lives exclusively on the phone: no cloud, no network permission (`android.permission.INTERNET` is intentionally absent), no demo data, no ads, no subscriptions, no external AI.
+**Kanso Ledger** is a native Android personal finance tracker written in **Kotlin** and **Jetpack Compose**, engineered with **100% local on-device SQLite persistence (AndroidX Room)** and a tactile **Swiss editorial paper & Obsidian Ink** UI. Every transaction, balance, forecast and report is calculated exclusively on the phone. The ledger, manual tracking, local SMS parsing and all calculations are fully offline; the only network code in the app is an **optional, off-by-default AI-assisted SMS parsing feature** (see §2.11) that you must explicitly enable, consent to, and configure before anything can be sent. No demo data, no ads, no subscriptions, no analytics.
 
 Currency is **Bangladeshi Taka (৳)** by default and everything starts at **৳0.00** on a fresh install so testing always begins from a clean, empty ledger.
 
@@ -11,7 +11,7 @@ Currency is **Bangladeshi Taka (৳)** by default and everything starts at **৳
 ## 1. Overview
 
 - **Platform**: Android 8.0+ (minSdk 26), Kotlin 2.0.21, Jetpack Compose, Material 3
-- **Persistence**: 100% on-device Room + SQLite. No cloud, no remote APIs, no analytics, no `INTERNET` permission
+- **Persistence**: 100% on-device Room + SQLite. No cloud storage, no analytics. `INTERNET` is present **only** for the optional AI feature, which is off by default and gated by user consent (see §2.11)
 - **Net funds rule**: headline balance = `Σ (per-account balances)` where each account is `opening + money in − money out − fees + adjustments`. Transfers move money between accounts and never count as income or expense
 - **Entry UI**: oversized tactile 4×4 keypad with live inline math (`14.50 + 3.20` → `৳17.70`), haptics, merchant auto-complete, plus a one-tap **Quick Entry** sheet
 - **Reports**: print-friendly **PDF** + **CSV** export via the Android Storage Access Framework — generated entirely on-device, with fees, transfers, SMS-vs-manual origin, account balances, reconciliation differences and pending counts
@@ -26,7 +26,7 @@ Currency is **Bangladeshi Taka (৳)** by default and everything starts at **৳
 | `RECEIVE_SMS` | Detect new transaction messages **while the feature is enabled** | No |
 | `POST_NOTIFICATIONS` | Show local notifications (import counts, budget, reconciliation, recurring due) | No — everything works silently without it |
 | `USE_BIOMETRIC` | Optional biometric app lock (privacy screen) | No |
-| ~~`INTERNET`~~ | **Not present.** Nothing can leave the device | — |
+| `INTERNET` | **Only** the optional AI-assisted parsing feature (§2.11) — off by default, consent + credential required. With AI off, nothing is ever sent | No — every feature works fully with AI off |
 
 **Google Play policy note**: apps that use `READ_SMS` must declare it in Play Console and pass policy review. In Kanso Ledger the SMS feature is optional, off by default, reads only to parse on-device, and is fully replaceable by manual paste or the Android share sheet.
 
@@ -46,7 +46,7 @@ Currency is **Bangladeshi Taka (৳)** by default and everything starts at **৳
 - **Paste** a single message or **share** text into the app from any app — zero SMS permission needed
 - Dashboard status line: tracking **ON/OFF**, processing mode, last successful run, pending count — and the Smart SMS sheet covers review, correction, undo, mode changes and disabling
 - Incoming processing is **permission-gated and failure-contained**: a database error during a broadcast never crashes the app, and idempotent fingerprints make the redelivery safe
-- Privacy: message bodies live in memory only during parsing — **never stored, logged, notified, backed up or crash-reported**. Only structured fields and fingerprints reach the database. All parsing, categorization, deduplication and calculations run on-device — no cloud ML, no external AI APIs
+- Privacy: message bodies live in memory only during parsing — **never stored, logged, notified, backed up or crash-reported**. Only structured fields and fingerprints reach the database. All parsing, categorization, deduplication and calculations run on-device. AI assistance is **optional, off by default** and never required (§2.11)
 - Turning Smart Tracking off disables all message reading; manual tracking is untouched
 
 ### 2.2 Multi-account ledger, transfers & reconciliation
@@ -99,7 +99,37 @@ Currency is **Bangladeshi Taka (৳)** by default and everything starts at **৳
 - Totals: opening, money added (incl. refund breakdown), expenses, **fees**, closing, transfers in/out of the range, **transfer fees**, SMS-vs-manual record counts, pending detections ("not counted anywhere")
 - Line items: date, time, type, category, money-in source, description, method, provider, **record origin (S/M)**, in/out, **fee**, running balance
 - Sections: category breakdown, method breakdown, **transfers** (from → to), **current account balances**, **unresolved reconciliation differences**, pending review
-- Saved through Android's Storage Access Framework — still zero network
+- Saved through Android's Storage Access Framework — generated on-device, using no network
+
+### 2.11 GLM 5.3 Flash AI-assisted parsing (optional, OFF by default)
+
+An **optional** assistant that helps interpret SMS the deterministic local parser found **ambiguous**. It is the *only* network code in the app and it is off until you deliberately turn it on. Everything else — the ledger, manual tracking, local SMS parsing, import, dedup, all calculations — works fully offline and is unaffected whether AI is on or off.
+
+**What it does, step by step (historical import and live messages):**
+1. The **local** parser classifies every message first. Non-financial messages (promos, OTPs, personal chat) are dropped here and **never sent**. Messages the local parser already understood with confidence are handled locally and **never sent**.
+2. Only genuine ambiguities are considered. Before anything leaves the device, **identifiers are stripped** (`AiPromptBuilder.redact`): phone numbers, emails, card-like numbers and long digit runs are removed; masked hints like `***4512` and the financial core (amounts, references) are kept.
+3. The redacted text is sent to **GLM 5.3 Flash** (`z-ai/glm-5.3-flash`) via an OpenAI-compatible `POST /chat/completions` with `Authorization: Bearer <key>`.
+4. The model must return a **strict JSON structure** (type, amount, currency, timestamp, provider, reference, fee, merchant, account hint, reported balance, direction, category, confidence, warnings).
+5. **Every response is validated locally** (`AiResponseValidator`): amounts must parse and be positive, only **BDT** is accepted, a missing amount/type is **never guessed**, and any doubt or low confidence is **queued for review**. The AI **cannot** execute database operations or write balances — a reported balance stays advisory.
+6. The validated result reuses the **same `SmsParser.fingerprint()`** as local parsing, so an AI-parsed and locally-parsed copy of one message dedup to **one** record.
+7. Confident results follow your chosen tracking mode (Review vs Auto); ambiguous ones always wait. A summary of recorded / ignored / duplicate / pending is shown.
+
+**Setup:**
+1. Open **SMART SETTINGS → AI-ASSISTED PARSING**.
+2. Toggle **Enable AI-assisted parsing**, tick **I consent to external processing**.
+3. Enter your **Model ID** (`z-ai/glm-5.3-flash`), **API base URL** (`https://integrate.api.nvidia.com/v1`) and **API key**, then **Save**.
+4. Three gates must all be open or nothing is sent: *feature on* + *consent* + *credential present*. Turn any off and the app instantly reverts to 100% local parsing.
+
+**Credential security (stated honestly):**
+- The API key is entered **at runtime by you** and stored in the app's **private SharedPreferences** (`kanso_ai_prefs`). It is **never hardcoded, never committed to Git, and never baked into the APK** — the build contains no secret.
+- **Risk of a client-held key:** any key present on a device can be extracted from a rooted device or a decrypted APK backup. This project is a purely client-side (serverless) app, so this residual risk is disclosed rather than hidden. A **server-side proxy** that holds the key as an environment secret is the only way to keep a key truly private; that is the recommended production setup. Do not commit keys to this repository — add them to `.gitignore` and rotate any key that has ever been shared.
+
+**External data-sharing disclosure:**
+- With AI **off** (the default), **no data leaves the device** — identical to the app before this feature existed.
+- With AI **on**, only the **redacted** text of messages the **local parser could not resolve** is transmitted to the AI provider. Your whole inbox is never uploaded, stored message bodies are never sent, and no ledger data, balances you calculated, or analytics leave the phone.
+- The third-party provider (NVIDIA/Zhipu) sees whatever is sent and is subject to its own privacy policy.
+
+**Known limitations (§12) — see also:** the live AI round-trip cannot be exercised by unit tests (mocked) or by CI; it must be verified on a device. A rate-limited, offline, mis-configured or failing AI **never blocks, drops or guesses a transaction** — it degrades to the local parser. See §2.11 tests in §11.
 
 ## 3. Screens / workflows
 
@@ -201,7 +231,7 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 3. `./gradlew test` — run the unit tests
 4. `./gradlew assembleRelease` — produce the APK at `app/build/outputs/apk/release/`
 
-> **Local host note**: this workspace is aarch64 Linux while Google's `aapt2`/`d8`/`r8` launchers ship x86-64 only, so builds happen in CI. Use the GitHub Actions workflow below. The pure Kotlin domain + data layer compiles and tests locally (JDK 17 + kotlinc, 158 tests); the Compose/Room-processor layer is verified by CI.
+> **Local host note**: this workspace is aarch64 Linux while Google's `aapt2`/`d8`/`r8` launchers ship x86-64 only, so builds happen in CI. Use the GitHub Actions workflow below. The pure Kotlin domain + data layer compiles and tests locally (JDK 17 + kotlinc, 209 tests); the Compose/Room-processor layer is verified by CI.
 
 ## 9. GitHub Actions build & release
 
@@ -217,7 +247,7 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 
 ## 10. Downloading & installing the APK
 
-> **📌 Safe working v1**: the `v1.0.0` GitHub Release is marked **"SAFE WORKING v1"** — it is the verified, known-good baseline build (empty ledger, ৳0.00 defaults, BDT default, zero-network). If a newer build ever misbehaves, return to that release. Later prereleases (v1.1.0-beta*, v1.2.0-build*, v2.0.0-build*) build on top of it and are labeled pre-release.
+> **📌 Safe working v1**: the `v1.0.0` GitHub Release is marked **"SAFE WORKING v1"** — it is the verified, known-good baseline build (empty ledger, ৳0.00 defaults, BDT default, fully offline with no `INTERNET` permission). If a newer build ever misbehaves, return to that release. Later prereleases (v1.1.0-beta*, v1.2.0-build*, v2.0.0-build*) build on top of it and are labeled pre-release.
 
 > **📌 Safe working v2**: the `v2.0.0` GitHub Release is marked **"SAFE WORKING V2"** — the designated working v2 baseline: full v2.0 feature set (Smart SMS Tracking, multi-account ledger with transfers & reconciliation, calendar, recurring, goals, quick entry, app lock, notifications, extended reports), 141 unit tests green locally and in CI, release APK built by GitHub Actions. This is the release to track and pin for v2: if any newer build misbehaves, return here to bisect regressions against it. What was verified is exactly what tests + CI can verify — on-device paths (SMS reading, biometric prompt, notifications, migration 1/2→3, PDF rendering) are covered by the limitations list in §12, not by untested claims. Earlier `v2.0.0-build*` prereleases remain on the Releases page as build history.
 
@@ -233,9 +263,9 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 ./gradlew test
 ```
 
-**158 locally verified tests** (JDK 17 + kotlinc, same sources CI builds) covering: analytics totals, zero-budget truthfulness, report ranges & boundaries, the v2 report contract (fees separable yet debited, transfers excluded from income/expense, SMS-vs-manual origin counts, pending counted-but-never-money, refund breakout, reconciliation + account sections in CSV, transfer-fee balance agreement), refund single-counting, CSV totals reconciliation, category seed integrity, payment methods + legacy ids, keypad math, **SMS parsing on fictional fixtures only** (incl. recharge, utility bills, data packages), **ingest planning (dedup fingerprints, modes, balance-only, account resolution, historical re-import idempotency in both modes, duplicate notices)**, **SMS access policy (feature off / permission denied / revoked → processing gated, records untouched; setup chain asks each permission once and never re-prompts a denial; permanent denial detected for the Settings path)**, **account state factory (fees, method fallback, transfers net-zero, pending isolation, reconciliation)**, recurring detection & forecasts, savings-goal projections, calendar day/week/month sums, insights inputs.
+**209 locally verified tests** (JDK 17 + kotlinc, same sources CI builds) covering: analytics totals, zero-budget truthfulness, report ranges & boundaries, the v2 report contract (fees separable yet debited, transfers excluded from income/expense, SMS-vs-manual origin counts, pending counted-but-never-money, refund breakout, reconciliation + account sections in CSV, transfer-fee balance agreement), refund single-counting, CSV totals reconciliation, category seed integrity, payment methods + legacy ids, keypad math, **SMS parsing on fictional fixtures only** (incl. recharge, utility bills, data packages), **ingest planning (dedup fingerprints, modes, balance-only, account resolution, historical re-import idempotency in both modes, duplicate notices)**, **SMS access policy (feature off / permission denied / revoked → processing gated, records untouched; setup chain asks each permission once and never re-prompts a denial; permanent denial detected for the Settings path)**, **account state factory (fees, method fallback, transfers net-zero, pending isolation, reconciliation)**, recurring detection & forecasts, savings-goal projections, calendar day/week/month sums, insights inputs, **AI integration (all mocked — no credentials, no paid requests): redaction removes identifiers before sending & never transmits the key, strict response validation (foreign currency rejected, missing amount never guessed, malformed/oversized replies never crash, confidence clamped), financial-integrity action mapping (transfers ≠ income/expense, fees separate, refunds explicit), AI+local fingerprint parity for cross-path dedup, interpreter fail-closed on every transport error; AI routing (non-financial & confident messages filtered locally and never sent, only ambiguity reaches AI, every AI failure degrades to the local result, disabled AI is byte-for-byte offline behaviour)**.
 
-**Not covered (disclosed)**: Room migrations (`1→2`, `2→3`) execute on Android — no JVM harness exists for them here; PDF rendering and the Compose UI compile only in CI (`android.graphics.pdf` / Compose cannot be unit-tested on JVM); SMS inbox reading, broadcast delivery and BiometricPrompt are runtime behaviours that require a device.
+**Not covered (disclosed)**: Room migrations (`1→2`, `2→3`) execute on Android — no JVM harness exists for them here; PDF rendering and the Compose UI compile only in CI (`android.graphics.pdf` / Compose cannot be unit-tested on JVM); SMS inbox reading, broadcast delivery and BiometricPrompt are runtime behaviours that require a device. The **live AI round-trip** (real HTTP to GLM 5.3 Flash) is **mocked in tests and never exercised for real** — it requires a device, a user-supplied key and a paid request, so it is disclosed here rather than claimed.
 
 ## 12. Limitations (stated plainly)
 
@@ -249,10 +279,11 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 - Built-in default categories cannot be deleted (rename/reassign/archive by design).
 - PDF output is exercised by the CI build only; CSV/logic paths are unit-tested.
 - Node.js deprecation warnings in CI are from GitHub Actions tooling, not the project.
+- **AI-assisted parsing (§2.11) is optional and off by default.** The live request to GLM 5.3 Flash is mocked in tests and only verifiable on a device with your own key; a client-held API key is extractable from a rooted device (a server-side proxy is the only way to fully hide it); the AI never overwrites calculated balances and any failure degrades to local parsing.
 
 ## 13. Contributing
 
-- Keep the app **zero-network**, **single-database**, **no-demo**. No seed transactions, no placeholders, no remote calls.
+- Keep the **ledger itself offline-first**: no analytics, no remote calls in the accounting path. The only permitted network use is the optional AI feature behind its three gates (feature + consent + credential) — never add a network dependency to core ledger, balance or report logic.
 - Currency is always internal minor units; format through `CurrencyFormatter`.
 - Ledger/account/category mutations go through `SpendingRepository` so the audit trail and stable-id invariants hold.
 - New SMS formats: extend `SmsParsingRules`/`SmsParser` with fictional fixtures + tests; never store raw message bodies anywhere.

@@ -10,3 +10,19 @@
 local.properties
 app/build
 apk-test/
+
+# --- AI / provider credentials: NEVER commit these -------------------------
+# The API key is entered at runtime in SMART SETTINGS and stored only in the
+# device's private SharedPreferences. This block guarantees no local secrets
+# file can ever be committed, even by accident.
+.env
+.env.*
+*.env
+secrets.*
+*secret*
+*credential*
+*api-key*
+*apikey*
+local-ai.properties
+ai.properties
+nvapi-*

@@ -2,15 +2,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Zero network permissions: 100% local on-device financial privacy.
-         The SMS permissions below are OPTIONAL and only used by the opt-in
-         Smart SMS Tracking feature (read on-device, parsed locally, message
-         bodies never stored, never uploaded). Without them the app works
-         exactly as before via manual entry, paste or the share sheet. -->
+    <!-- Permissions, by feature:
+         SMS permissions are OPTIONAL and only used by the opt-in Smart SMS
+         Tracking feature (read on-device, parsed locally, message bodies never
+         stored). Without them the app works exactly as before via manual entry,
+         paste or the share sheet.
+
+         INTERNET exists ONLY for the optional, off-by-default AI-assisted
+         parsing feature. It is closed by three user-controlled gates (feature
+         disabled, no consent, no credential) before any text leaves the device,
+         and only redacted financial text from messages the LOCAL parser found
+         ambiguous is ever sent. The offline ledger, manual tracking, local SMS
+         parsing, import and all calculations work fully with AI off and would
+         work with INTERNET removed entirely. See README "External AI". -->
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:name=".KansoApplication"

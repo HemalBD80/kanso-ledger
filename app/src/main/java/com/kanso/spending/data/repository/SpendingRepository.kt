@@ -2,6 +2,8 @@ package com.kanso.spending.data.repository
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.kanso.spending.data.ai.AiSettingsStore
+import com.kanso.spending.data.ai.HttpAiTransport
 import com.kanso.spending.data.local.LocalBackupManager
 import com.kanso.spending.data.local.dao.SpendingDao
 import com.kanso.spending.data.local.entity.AccountAdjustmentEntity
@@ -24,6 +26,8 @@ import com.kanso.spending.data.model.MoneySource
 import com.kanso.spending.data.model.PaymentMethod
 import com.kanso.spending.domain.accounts.AccountState
 import com.kanso.spending.domain.accounts.AccountStateFactory
+import com.kanso.spending.domain.ai.AiSmsAugmenter
+import com.kanso.spending.domain.ai.AiSmsInterpreter
 import com.kanso.spending.domain.categorization.CategoryRule
 import com.kanso.spending.domain.categorization.CategorySuggester
 import com.kanso.spending.domain.sms.DuplicateNotice
@@ -33,11 +37,13 @@ import com.kanso.spending.domain.sms.RawInboundSms
 import com.kanso.spending.domain.sms.SmsImportMode
 import com.kanso.spending.domain.sms.SmsIngestPlanner
 import com.kanso.spending.domain.sms.SmsTxType
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.withContext
 import java.time.YearMonth
 import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicInteger
@@ -155,6 +161,33 @@ class SpendingRepository(
     val themeMode: StateFlow<LedgerThemeMode> = _themeMode.asStateFlow()
 
     private val auditCounter = AtomicInteger(0)
+
+    // ------------------------------------------------------------- AI assist
+    //
+    // Optional, off by default, and gated three ways before a single byte
+    // leaves the device: the user must enable AI, consent to external
+    // processing, and supply their own credential. When any gate is closed the
+    // augmenter routes every message to the local parser — byte-for-byte the
+    // offline behaviour the app had before AI existed.
+
+    private val aiSettings = AiSettingsStore(context.applicationContext)
+    private val aiInterpreter = AiSmsInterpreter(HttpAiTransport())
+
+    private val aiAugmenter = AiSmsAugmenter(
+        consultAi = { message ->
+            withContext(Dispatchers.IO) {
+                aiInterpreter.interpret(
+                    config = aiSettings.read(),
+                    sender = message.sender,
+                    body = message.body,
+                    receivedAtMillis = message.receivedAtMillis
+                )
+            }
+        },
+        enabled = {
+            aiSettings.aiEnabled && aiSettings.aiConsentGranted && aiSettings.read().isConfigured
+        }
+    )
 
     // ------------------------------------------------------------- reads
 
@@ -789,7 +822,12 @@ class SpendingRepository(
 
         val batchId = "batch_${System.currentTimeMillis()}_${auditCounter.incrementAndGet()}"
         val context = buildIngestContext(mode, batchId)
-        val plan = SmsIngestPlanner.plan(messages, context)
+        // AI assist (when the user has enabled + consented + configured it)
+        // resolves only the messages the local parser found ambiguous. Every
+        // failure degrades to that local result — an AI outage never blocks,
+        // drops, or guesses a transaction.
+        val aiResult = aiAugmenter.buildOverrides(messages)
+        val plan = SmsIngestPlanner.plan(messages, context, aiResult.overrides)
         val now = context.nowMillis
 
         for (item in plan.items) {
@@ -895,7 +933,10 @@ class SpendingRepository(
             return SmsImportPreview(0, 0, 0, 0, 0, 0, emptyList(), emptyList())
         }
         val context = buildIngestContext(SmsImportMode.AUTO, "preview")
-        val plan = SmsIngestPlanner.plan(messages, context)
+        // Preview runs the exact same AI-assist path as the real import, so the
+        // confident/queued counts the user sees match what committing will do.
+        val aiResult = aiAugmenter.buildOverrides(messages)
+        val plan = SmsIngestPlanner.plan(messages, context, aiResult.overrides)
         val samples = plan.items.mapNotNull { item ->
             val planned = item.detection ?: return@mapNotNull null
             val tx = planned.parsed

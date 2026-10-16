@@ -97,15 +97,32 @@ data class IngestPlan(
  */
 object SmsIngestPlanner {
 
-    fun plan(messages: List<RawInboundSms>, context: IngestContext): IngestPlan {
+    /**
+     * Optional AI-assisted results, keyed by message index. When present for a
+     * message, that pre-validated result is used instead of the local parser's
+     * *uncertain* outcome. A confident local parse is never overridden — the
+     * deterministic parser stays authoritative and AI only fills genuine gaps.
+     */
+    fun plan(
+        messages: List<RawInboundSms>,
+        context: IngestContext,
+        aiOverrides: Map<Int, SmsParseResult> = emptyMap()
+    ): IngestPlan {
         val items = mutableListOf<PlannedSms>()
         val duplicateItems = mutableListOf<DuplicateNotice>()
         val seen = HashSet<String>(context.knownFingerprints)
         var duplicates = 0
         var ignored = 0
 
-        for (message in messages) {
-            when (val result = SmsParser.parse(message.sender, message.body, message.receivedAtMillis)) {
+        for ((index, message) in messages.withIndex()) {
+            // AI assist is consulted only for messages the local parser could not
+            // resolve with confidence; it can never replace a confident parse.
+            val local = SmsParser.parse(message.sender, message.body, message.receivedAtMillis)
+            val result = when {
+                local is SmsParseResult.Ambiguous -> aiOverrides[index] ?: local
+                else -> local
+            }
+            when (result) {
                 is SmsParseResult.NotFinancial -> ignored++
 
                 is SmsParseResult.Ambiguous -> {

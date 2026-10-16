@@ -129,7 +129,7 @@ fun ReportSheet(
                 Text("EXPORT CSV FOR SPREADSHEETS", style = MaterialTheme.typography.labelLarge)
             }
             Text(
-                text = "Reports are generated entirely on-device with the ৳ symbol and saved to a location you choose. No network is used.",
+                text = "Reports are generated entirely on-device with the ৳ symbol and saved to a location you choose. Exporting a report uses no network.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.inkMuted,
                 modifier = Modifier.padding(top = 8.dp, bottom = 20.dp)

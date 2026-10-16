@@ -22,7 +22,8 @@ import java.time.ZoneId
  * Local, configurable notifications. Privacy rules that hold here:
  *  - no message content is ever included — counts, categories and amounts the
  *    user already recorded on this device only;
- *  - nothing leaves the device (the app still holds no network permission);
+ *  - nothing leaves the device as part of a notification — they carry only
+ *    counts, categories and amounts already recorded here, never message text;
  *  - every area is opt-in in settings and each event is watermarked so the
  *    same situation never re-notifies;
  *  - if POST_NOTIFICATIONS is denied, checks degrade to no-ops silently.

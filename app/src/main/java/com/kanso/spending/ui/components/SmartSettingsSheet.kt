@@ -11,7 +11,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.kanso.spending.data.ai.AiSettingsStore
 import com.kanso.spending.ui.SmartLedgerActions
 import com.kanso.spending.ui.SmartLedgerUiState
 import com.kanso.spending.ui.theme.LocalKansoColors
@@ -102,6 +104,11 @@ fun SmartSettingsSheet(
 
             Spacer(Modifier.height(14.dp))
 
+            // ---- AI-assisted parsing (optional, off by default)
+            AiConfigSection(store = remember { AiSettingsStore(LocalContext.current) })
+
+            Spacer(Modifier.height(14.dp))
+
             // ---- privacy summary
             Text("PRIVACY SUMMARY", style = MaterialTheme.typography.labelSmall, color = colors.inkSecondary)
             Spacer(Modifier.height(6.dp))
@@ -112,11 +119,12 @@ fun SmartSettingsSheet(
                 border = androidx.compose.foundation.BorderStroke(1.dp, colors.hairlineBorder)
             ) {
                 Column(Modifier.padding(14.dp)) {
-                    PrivacyLine("No network permission — nothing can be uploaded.")
+                    PrivacyLine("Network is used ONLY by the optional AI feature, which is off until you enable it above. With AI off, nothing is ever sent.")
                     PrivacyLine("SMS bodies are parsed in memory only: never stored, logged, backed up or notified.")
                     PrivacyLine("Backups contain structured ledger data and SMS fingerprints/metadata only.")
                     PrivacyLine("Notifications carry counts and amounts you recorded — never message content.")
-                    PrivacyLine("Categorisation is keyword rules you can see and edit — no cloud ML, no external AI.")
+                    PrivacyLine("Categorisation is keyword rules you can see and edit. AI is optional and never required for any feature.")
+                    PrivacyLine("When AI is on, only redacted text of locally-ambiguous messages is sent — never your whole inbox, and never a stored message body.")
                     PrivacyLine("'Clear SMS history' erases import metadata and the review queue; your recorded transactions stay.")
                     PrivacyLine("Turning Smart Tracking off disables all message reading — manual tracking is unaffected.")
                 }
