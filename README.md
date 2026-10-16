@@ -203,6 +203,8 @@ App lock overlay (optional) sits on top; the dashboard stays composed beneath it
 
 > **📌 Safe working v1**: the `v1.0.0` GitHub Release is marked **"SAFE WORKING v1"** — it is the verified, known-good baseline build (empty ledger, ৳0.00 defaults, BDT default, zero-network). If a newer build ever misbehaves, return to that release. Later prereleases (v1.1.0-beta*, v1.2.0-build*, v2.0.0-build*) build on top of it and are labeled pre-release.
 
+> **📌 Safe working v2**: the `v2.0.0` GitHub Release is marked **"SAFE WORKING V2"** — the designated working v2 baseline: full v2.0 feature set (Smart SMS Tracking, multi-account ledger with transfers & reconciliation, calendar, recurring, goals, quick entry, app lock, notifications, extended reports), 141 unit tests green locally and in CI, release APK built by GitHub Actions. This is the release to track and pin for v2: if any newer build misbehaves, return here to bisect regressions against it. What was verified is exactly what tests + CI can verify — on-device paths (SMS reading, biometric prompt, notifications, migration 1/2→3, PDF rendering) are covered by the limitations list in §12, not by untested claims. Earlier `v2.0.0-build*` prereleases remain on the Releases page as build history.
+
 1. Open the repository's **Releases** page.
 2. Download `KansoLedger-<version>.apk` (or grab the Actions artifact for untested intermediate builds).
 3. On an Android device, allow "Install unknown apps" for your browser/file manager and install.
