@@ -45,6 +45,7 @@ import java.time.ZoneId
  * needs SMS access to remain a working app — denial falls back to paste/share
  * and manual tracking.
  */
+@OptIn(ExperimentalMaterial3Api::class) // DatePickerDialog / DatePicker are experimental Material3
 @Composable
 fun HistoryImportSection(
     actions: SmartLedgerActions,
