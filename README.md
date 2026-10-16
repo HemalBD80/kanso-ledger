@@ -152,6 +152,8 @@ Sheets: TactileExpenseSheet • MoneyInSheet • CategoryManagerSheet • Report
 
 ## 10. Downloading & installing the APK
 
+> **📌 Safe working v1**: the `v1.0.0` GitHub Release is marked **"SAFE WORKING v1"** — it is the verified, known-good baseline build (empty ledger, ৳0.00 defaults, BDT default, zero-network). If a newer build ever misbehaves, return to that release. Later prereleases (v1.1.0-beta*, v1.2.0-build*) build on top of it and are labeled pre-release.
+
 1. Open the repository's **Releases** page.
 2. Download `KansoLedger-<version>.apk` (or grab the Actions artifact for untested intermediate builds).
 3. On an Android device, allow " Install unknown apps" for your browser/file manager and install.
