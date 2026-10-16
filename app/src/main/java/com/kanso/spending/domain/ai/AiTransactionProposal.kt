@@ -35,10 +35,14 @@ data class AiTransactionProposal(
     val accountHint: String?,
     /** Balance the provider reports, in major units. Advisory only — never authoritative. */
     val reportedBalance: String?,
-    /** "credit" | "debit" | null, when the provider states direction explicitly. */
+    /** "credit"|"debit"|"in"|"out" | null, when the provider states direction explicitly. */
     val direction: String?,
-    /** Model's own 0..100 confidence. Clamped and treated as a hint, not a fact. */
-    val confidence: Int?,
+    /**
+     * Model's own confidence. NOTE: GLM 5.3 Flash returns this on a **0..1**
+     * scale (e.g. 0.95), not 0..100. Kept as a Double so the validator can
+     * normalise either scale; treated as a hint, never a fact.
+     */
+    val confidence: Double?,
     /** Category suggestion, if the model offers one. Never overrides user categories. */
     val categorySuggestion: String?,
     /** Anything the model flags as uncertain, conflicting, or incomplete. */

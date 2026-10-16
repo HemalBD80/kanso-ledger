@@ -27,11 +27,20 @@ object AiResponseParser {
         if (replyText.isNullOrBlank()) return ParseOutcome.Malformed
         if (replyText.length > MAX_REPLY_CHARS) return ParseOutcome.Malformed
 
-        // The documented OpenAI envelope carries the model's JSON as a *string*
-        // at choices[0].message.content. Prefer that, then fall back to treating
-        // the whole reply as a bare proposal object.
-        val contentString = extractContentString(replyText)
-        val source = contentString ?: replyText
+        val trimmed = replyText.trim()
+        val isEnvelope = runCatching { JSONObject(trimmed).has("choices") }.getOrDefault(false)
+
+        val source = if (isEnvelope) {
+            // The OpenAI envelope carries the model's JSON as a *string* at
+            // choices[0].message.content. A null/blank content — which happens
+            // when a reasoning model exhausts its budget on the hidden reasoning
+            // trace, or the reply is truncated — is unusable and must NEVER be
+            // silently reinterpreted as "not financial".
+            extractContentString(trimmed) ?: return ParseOutcome.Malformed
+        } else {
+            // Not an envelope: treat the whole reply as a bare proposal object.
+            trimmed
+        }
 
         val payload = extractJsonObject(source) ?: return ParseOutcome.Malformed
         return ParseOutcome.Parsed(toProposal(payload))
@@ -105,7 +114,7 @@ object AiResponseParser {
         accountHint = o.optStringOrNull("accountHint"),
         reportedBalance = o.optStringOrNull("reportedBalance"),
         direction = o.optStringOrNull("direction"),
-        confidence = if (o.has("confidence") && !o.isNull("confidence")) o.optInt("confidence", 0) else null,
+        confidence = if (o.has("confidence") && !o.isNull("confidence")) o.optDouble("confidence", 0.0) else null,
         categorySuggestion = o.optStringOrNull("categorySuggestion"),
         warnings = o.optJSONArray("warnings")?.let { arr ->
             (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotBlank() } }

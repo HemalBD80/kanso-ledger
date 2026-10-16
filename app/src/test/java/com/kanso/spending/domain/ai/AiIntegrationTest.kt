@@ -47,7 +47,7 @@ class AiIntegrationTest {
         isFinancial = isFinancial, provider = provider, type = type, amount = amount,
         currency = currency, timestamp = null, reference = reference, fee = fee,
         merchant = null, accountHint = "***4512", reportedBalance = reportedBalance,
-        direction = direction, confidence = confidence, categorySuggestion = null,
+        direction = direction, confidence = confidence?.toDouble(), categorySuggestion = null,
         warnings = warnings
     )
 
@@ -162,7 +162,7 @@ class AiIntegrationTest {
         val p = (outcome as AiResponseParser.ParseOutcome.Parsed).proposal
         assertEquals("Nagad", p.provider)
         assertEquals("500.00", p.amount)
-        assertEquals(90, p.confidence)
+        assertEquals(90.0, p.confidence!!, 1e-9)
     }
 
     @Test
@@ -236,9 +236,105 @@ class AiIntegrationTest {
     }
 
     @Test
-    fun missingProviderIsRejected() {
+    fun missingProviderFallsBackToSenderInsteadOfRejecting() {
+        // GLM 5.3 Flash returns provider: null even for financial messages (it
+        // honours "never guess"). A null/blank provider must NOT reject a
+        // correct extraction — the sender is a reliable fallback.
         val r = AiResponseValidator.validate(proposal(provider = "  "), "bKash", 0L)
-        assertTrue(r is AiValidationResult.Rejected)
+        assertTrue(r is AiValidationResult.Accepted)
+        assertEquals("bKash", (r as AiValidationResult.Accepted).transaction.provider)
+
+        val r2 = AiResponseValidator.validate(proposal(provider = null), "HBL Bank", 0L)
+        assertEquals("HBL Bank", (r2 as AiValidationResult.Accepted).transaction.provider)
+    }
+
+    // --------------------------------------- real GLM 5.3 Flash behaviour (live)
+    //
+    // The following pin the ACTUAL output observed against the live endpoint,
+    // which differs from the idealised fixtures above. They exist because the
+    // mocked assumptions were wrong and only a real call exposed it.
+
+    @Test
+    fun realConfidenceScaleIs0To1AndNormalisesToPercent() {
+        // Observed live: 0.9 / 0.95 / 0.97 — NOT 90 / 95 / 97.
+        assertEquals(95, AiResponseValidator.normalizeConfidence(0.95))
+        assertEquals(90, AiResponseValidator.normalizeConfidence(0.9))
+        assertEquals(97, AiResponseValidator.normalizeConfidence(0.97))
+        // A provider using the 0..100 scale is left alone.
+        assertEquals(85, AiResponseValidator.normalizeConfidence(85.0))
+        assertEquals(100, AiResponseValidator.normalizeConfidence(100.0))
+        assertEquals(0, AiResponseValidator.normalizeConfidence(null))
+    }
+
+    @Test
+    fun realConfidenceNoLongerForcesEverythingIntoReview() {
+        // Before the fix, 0.95 read as optInt→0 → always below threshold →
+        // every correct extraction was queued. Now it normalises to 95.
+        val r = AiResponseValidator.validate(proposal(confidence = null), "bKash", 0L)
+        // (null confidence stays 0 → still queues, correctly)
+        assertTrue((r as AiValidationResult.Accepted).transaction.needsReview)
+    }
+
+    @Test
+    fun realTypeStringsWithSpacesAndSnakeCaseMapCorrectly() {
+        // Observed live type strings, including one with a SPACE ("ATM withdrawal").
+        val cases = mapOf(
+            "send_money" to SmsTxType.MONEY_SENT,
+            "received" to SmsTxType.MONEY_RECEIVED,
+            "debit_card_purchase" to SmsTxType.PURCHASE,
+            "ATM withdrawal" to SmsTxType.WITHDRAWAL,
+            "fee" to SmsTxType.FEE,
+            "refund" to SmsTxType.REFUND,
+            "balance_inquiry" to SmsTxType.BALANCE_ONLY
+        )
+        for ((raw, expected) in cases) {
+            val r = AiResponseValidator.validate(proposal(type = raw, amount = if (expected == SmsTxType.BALANCE_ONLY) null else "100.00"), "bKash", 0L)
+            assertTrue("type '$raw' must be accepted", r is AiValidationResult.Accepted)
+            assertEquals("type '$raw'", expected, (r as AiValidationResult.Accepted).transaction.type)
+        }
+    }
+
+    @Test
+    fun realDirectionInIsAcceptedAndDoesNotForceReview() {
+        // Observed live: the model says "in", not "credit". It must be treated
+        // as a known direction, not an ambiguity.
+        val r = AiResponseValidator.validate(
+            proposal(type = "received", direction = "in", amount = "3000.00", confidence = 95, warnings = null),
+            "bKash", 0L
+        )
+        val tx = (r as AiValidationResult.Accepted).transaction
+        assertFalse("direction 'in' is known — not an ambiguity", tx.needsReview)
+    }
+
+    @Test
+    fun realConfidentResponseParsesAndValidatesEndToEnd() {
+        // EXACT content captured live from GLM 5.3 Flash for a bKash send.
+        val realContent = """{"isFinancial": true, "provider": null, "type": "send_money", "amount": "1,250.00", "currency": "BDT", "timestamp": "15/10/26 14:22", "reference": "bK6P9Q2R", "fee": "5.00", "merchant": null, "accountHint": null, "reportedBalance": "4,320.50", "direction": "debit", "confidence": 0.9, "categorySuggestion": "transfer", "warnings": ["Provider not explicitly named in message"]}"""
+        val envelope = jsonReply(realContent)
+        val parsed = AiResponseParser.parse((envelope as AiTransportResult.Success).replyText)
+        assertTrue(parsed is AiResponseParser.ParseOutcome.Parsed)
+        val proposal = (parsed as AiResponseParser.ParseOutcome.Parsed).proposal
+        assertEquals(0.9, proposal.confidence!!, 1e-9)
+        assertEquals("send_money", proposal.type)
+
+        val validated = AiResponseValidator.validate(proposal, "bKash", 1_760_000_000_000L)
+        assertTrue(validated is AiValidationResult.Accepted)
+        val tx = (validated as AiValidationResult.Accepted).transaction
+        assertEquals(125000L, tx.amountCents)      // "1,250.00" → poisha, comma stripped
+        assertEquals(500L, tx.feeCents)
+        assertEquals(432050L, tx.reportedBalanceCents)
+        assertEquals("bKash", tx.provider)          // null provider → sender fallback
+        assertEquals("bK6P9Q2R", tx.referenceId)
+        assertEquals(SmsTxType.MONEY_SENT, tx.type)
+        assertTrue(tx.needsReview)                  // model flagged a warning → review
+    }
+
+    @Test
+    fun nullContentEnvelopeIsMalformedNeverSilentlyNotFinancial() {
+        // A reasoning model that exhausts its budget returns content:null. That
+        // must be Malformed (→ fail closed), never reinterpreted as NotFinancial.
+        val envelope = """{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"thinking..."},"finish_reason":"length"}]}"""
+        assertEquals(AiResponseParser.ParseOutcome.Malformed, AiResponseParser.parse(envelope))
     }
 
     @Test

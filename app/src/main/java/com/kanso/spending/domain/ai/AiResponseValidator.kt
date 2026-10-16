@@ -45,6 +45,15 @@ object AiResponseValidator {
 
     private val ALLOWED_CURRENCIES = setOf("BDT", "BDT.", "৳", "TK", "TAKA")
 
+    /** Used when neither the model nor the sender yields a provider name. */
+    private const val UNKNOWN_PROVIDER = "unknown"
+
+    /**
+     * Directions GLM 5.3 Flash actually emits. Observed: "debit" and "in" (it
+     * says "in", not "credit"). Anything outside this set queues for review.
+     */
+    private val KNOWN_DIRECTIONS = setOf("credit", "debit", "in", "out")
+
     fun validate(
         proposal: AiTransactionProposal,
         sender: String,
@@ -54,10 +63,12 @@ object AiResponseValidator {
             return AiValidationResult.NotFinancial(proposal.modelReasoningOr("Model marked the message non-financial"))
         }
 
-        val provider = proposal.provider?.trim().orEmpty()
-        if (provider.isEmpty()) {
-            return AiValidationResult.Rejected("No provider could be identified.")
-        }
+        // GLM 5.3 Flash returns provider: null even for clearly financial messages
+        // (it honors "never guess"). The sender is a reliable, already-known
+        // fallback, so a null provider must NOT reject a correct extraction.
+        val provider = proposal.provider?.trim()?.takeIf { it.isNotEmpty() }
+            ?: sender.trim().takeIf { it.isNotEmpty() }
+            ?: UNKNOWN_PROVIDER
 
         // Currency: only the ledger's own BDT is accepted. An explicitly foreign
         // currency is rejected — never converted, never assumed.
@@ -77,7 +88,8 @@ object AiResponseValidator {
                 proposal = proposal, provider = provider, type = type,
                 amountCents = null, feeCents = 0L, sender = sender,
                 receivedAtMillis = receivedAtMillis, needsReview = false,
-                reviewReason = null
+                reviewReason = null,
+                confidencePct = normalizeConfidence(proposal.confidence)
             )
             return AiValidationResult.Accepted(parsed)
         }
@@ -97,18 +109,18 @@ object AiResponseValidator {
 
         // Ambiguity the model itself flagged, or a low confidence, always queues.
         val warnings = proposal.warnings.orEmpty().filter { it.isNotBlank() }
-        val modelConfidence = (proposal.confidence ?: 0).coerceIn(0, 100)
+        val confidencePct = normalizeConfidence(proposal.confidence)
         val direction = proposal.direction?.trim()?.lowercase(Locale.ROOT)
 
         val needsReview = when {
             warnings.isNotEmpty() -> true
-            modelConfidence < AUTO_COMMIT_CONFIDENCE -> true
-            direction != null && direction != "credit" && direction != "debit" -> true
+            confidencePct < AUTO_COMMIT_CONFIDENCE -> true
+            direction != null && direction !in KNOWN_DIRECTIONS -> true
             else -> false
         }
         val reason = when {
             warnings.isNotEmpty() -> "Model flagged: ${warnings.joinToString("; ")}"
-            modelConfidence < AUTO_COMMIT_CONFIDENCE -> "Confidence $modelConfidence is below the auto-commit threshold."
+            confidencePct < AUTO_COMMIT_CONFIDENCE -> "Confidence $confidencePct is below the auto-commit threshold."
             else -> null
         }
 
@@ -116,9 +128,21 @@ object AiResponseValidator {
             proposal = proposal, provider = provider, type = type,
             amountCents = amountCents, feeCents = feeCents, sender = sender,
             receivedAtMillis = receivedAtMillis, needsReview = needsReview,
-            reviewReason = reason
+            reviewReason = reason,
+            confidencePct = confidencePct
         )
         return AiValidationResult.Accepted(parsed)
+    }
+
+    /**
+     * GLM 5.3 Flash reports confidence on a 0..1 scale (observed 0.9 / 0.95 /
+     * 0.97). Other providers may use 0..100. Values in (0,1] are treated as
+     * fractions and scaled to percent; anything above 1 is already percent.
+     */
+    fun normalizeConfidence(raw: Double?): Int {
+        val v = raw ?: return 0
+        val pct = if (v in 0.0..1.0) v * 100.0 else v
+        return pct.toInt().coerceIn(0, 100)
     }
 
     private fun buildParsed(
@@ -130,7 +154,8 @@ object AiResponseValidator {
         sender: String,
         receivedAtMillis: Long,
         needsReview: Boolean,
-        reviewReason: String?
+        reviewReason: String?,
+        confidencePct: Int
     ): ParsedSmsTransaction {
         val reference = proposal.reference?.trim()?.takeIf { it.isNotEmpty() }
         // Reuse the local parser's fingerprint so AI and local parses of the same
@@ -155,7 +180,7 @@ object AiResponseValidator {
             accountHint = proposal.accountHint?.trim()?.takeIf { it.isNotEmpty() },
             reportedBalanceCents = proposal.reportedBalance?.let { SmsParser.parseAmount(it) },
             reportedDirection = proposal.direction?.trim(),
-            confidence = (proposal.confidence ?: 0).coerceIn(0, 100),
+            confidence = confidencePct,
             needsReview = needsReview,
             reviewReason = reviewReason,
             fingerprint = fingerprint
@@ -182,20 +207,33 @@ object AiResponseValidator {
         }
     }
 
-    /** Lenient string→enum mapping; anything unrecognised becomes UNKNOWN. */
+    /**
+     * Lenient string→enum mapping; anything unrecognised becomes UNKNOWN.
+     *
+     * Normalisation is deliberately generous because GLM 5.3 Flash emits types
+     * inconsistently — observed live: "send_money", "received", "debit_card_
+     * purchase", "ATM withdrawal" (with a space), "fee", "refund",
+     * "balance_inquiry". Spaces, hyphens and underscores are all folded to a
+     * single separator, case is ignored, and the real vocabulary is covered.
+     */
     private fun mapType(raw: String?): SmsTxType {
-        val key = raw?.trim()?.uppercase(Locale.ROOT)?.replace('-', '_').orEmpty()
+        val key = raw?.trim()
+            ?.uppercase(Locale.ROOT)
+            ?.replace(Regex("[\\s\\-]+"), "_")
+            ?.replace(Regex("_+"), "_")
+            ?.trim('_')
+            .orEmpty()
         return when (key) {
-            "MONEY_SENT", "SENT", "SEND", "PAYMENT", "TRANSFER_OUT" -> SmsTxType.MONEY_SENT
-            "MONEY_RECEIVED", "RECEIVED", "RECEIVE", "CREDIT", "TRANSFER_IN" -> SmsTxType.MONEY_RECEIVED
-            "PURCHASE", "DEBIT", "SPEND", "CARD_PURCHASE" -> SmsTxType.PURCHASE
-            "WITHDRAWAL", "CASH_OUT", "CASHOUT", "ATM" -> SmsTxType.WITHDRAWAL
+            "MONEY_SENT", "SENT", "SEND", "SEND_MONEY", "MONEY_TRANSFER", "PAYMENT", "TRANSFER_OUT", "OUT" -> SmsTxType.MONEY_SENT
+            "MONEY_RECEIVED", "RECEIVED", "RECEIVE", "MONEY_IN", "CREDIT", "TRANSFER_IN", "IN" -> SmsTxType.MONEY_RECEIVED
+            "PURCHASE", "DEBIT", "SPEND", "CARD_PURCHASE", "DEBIT_CARD_PURCHASE", "CARD_SPEND", "POINT_OF_SALE", "POS" -> SmsTxType.PURCHASE
+            "WITHDRAWAL", "CASH_OUT", "CASHOUT", "ATM", "ATM_WITHDRAWAL", "ATM_CASH_OUT" -> SmsTxType.WITHDRAWAL
             "DEPOSIT", "CASH_IN", "CASHIN" -> SmsTxType.DEPOSIT
-            "REFUND", "REVERSAL", "CHARGEBACK" -> SmsTxType.REFUND
-            "FEE", "CHARGE", "SERVICE_FEE" -> SmsTxType.FEE
+            "REFUND", "REVERSAL", "CHARGEBACK", "REFUNDED" -> SmsTxType.REFUND
+            "FEE", "CHARGE", "SERVICE_FEE", "FEE_CHARGED" -> SmsTxType.FEE
             "TRANSFER_SELF", "SELF_TRANSFER", "OWN_TRANSFER" -> SmsTxType.TRANSFER_SELF
-            "BALANCE_ONLY", "BALANCE", "BALANCE_NOTICE" -> SmsTxType.BALANCE_ONLY
-            "PROMO", "MARKETING", "OFFER" -> SmsTxType.PROMO
+            "BALANCE_ONLY", "BALANCE", "BALANCE_NOTICE", "BALANCE_INQUIRY", "BALANCE_ENQUIRY", "ACCOUNT_BALANCE" -> SmsTxType.BALANCE_ONLY
+            "PROMO", "MARKETING", "OFFER", "PROMOTION" -> SmsTxType.PROMO
             else -> SmsTxType.UNKNOWN
         }
     }
