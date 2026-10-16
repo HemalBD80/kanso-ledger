@@ -25,6 +25,10 @@ import com.kanso.spending.ui.SmartLedgerActions
 import com.kanso.spending.ui.SmartLedgerUiState
 import com.kanso.spending.ui.theme.LocalKansoColors
 
+/** Structural (seeded) accounts may be archived but never deleted. */
+private fun smartStructural(accountId: String): Boolean =
+    accountId in AccountEntity.STRUCTURAL_IDS
+
 /**
  * Multi-account ledger: cash, bank, wallet and card with their own balances.
  * Transfers move money between accounts and are never income or expense;

@@ -95,7 +95,7 @@ fun RecurringSheet(
                         Column(Modifier.weight(1f)) {
                             Text(item.title, style = MaterialTheme.typography.bodyMedium, color = colors.inkPrimary)
                             Text(
-                                Instant.ofEpochDay(item.dueMillis / 86_400_000L).atZone(ZoneId.systemDefault()).toLocalDate().format(dateFmt),
+                                LocalDate.ofEpochDay(item.dueMillis / 86_400_000L).format(dateFmt),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.inkMuted
                             )
@@ -142,8 +142,8 @@ fun RecurringSheet(
                                     color = colors.inkSecondary
                                 )
                                 Text(
-                                    "Next expected " + Instant.ofEpochDay(candidate.expectedNextMillis / 86_400_000L)
-                                        .atZone(ZoneId.systemDefault()).toLocalDate().format(dateFmt),
+                                    "Next expected " + LocalDate.ofEpochDay(candidate.expectedNextMillis / 86_400_000L)
+                                        .format(dateFmt),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = colors.inkMuted
                                 )
@@ -181,8 +181,8 @@ fun RecurringSheet(
                                 Text(
                                     "${CurrencyFormatter.formatCents(rule.amountCents, currencySymbol)} · " +
                                         "every ${rule.intervalDays} days · due " +
-                                        Instant.ofEpochDay(rule.nextDueMillis / 86_400_000L)
-                                            .atZone(ZoneId.systemDefault()).toLocalDate().format(dateFmt) +
+                                        LocalDate.ofEpochDay(rule.nextDueMillis / 86_400_000L)
+                                            .format(dateFmt) +
                                         if (overdue) " · past due (not counted until you record it)" else "",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (overdue) colors.warningAccent else colors.inkSecondary
@@ -343,7 +343,7 @@ fun RecurringSheet(
             confirmButton = {
                 TextButton(onClick = {
                     pickerState.selectedDateMillis?.let { millis ->
-                        dueDate = Instant.ofEpochDay(millis / 86_400_000L).atZone(ZoneId.systemDefault()).toLocalDate()
+                        dueDate = LocalDate.ofEpochDay(millis / 86_400_000L)
                     }
                     showDuePicker = false
                 }) { Text("OK") }

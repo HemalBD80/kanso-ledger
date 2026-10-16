@@ -104,8 +104,8 @@ fun GoalsSheet(
                                     "${CurrencyFormatter.formatCents(forecast.savedCents, currencySymbol)} of " +
                                         CurrencyFormatter.formatCents(forecast.targetCents, currencySymbol) +
                                         (goal?.deadlineMillis?.let {
-                                            " · by " + Instant.ofEpochDay(it / 86_400_000L)
-                                                .atZone(ZoneId.systemDefault()).toLocalDate().format(dateFmt)
+                                            " · by " + LocalDate.ofEpochDay(it / 86_400_000L)
+                                                .format(dateFmt)
                                         } ?: ""),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = colors.inkSecondary
@@ -182,8 +182,8 @@ fun GoalsSheet(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            Instant.ofEpochDay(contribution.timestampEpochMillis / 86_400_000L)
-                                                .atZone(ZoneId.systemDefault()).toLocalDate().format(dateFmt) +
+                                            LocalDate.ofEpochDay(contribution.timestampEpochMillis / 86_400_000L)
+                                                .format(dateFmt) +
                                                 (if (contribution.note.isNotBlank()) " · ${contribution.note}" else ""),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = colors.inkSecondary,
@@ -328,7 +328,7 @@ fun GoalsSheet(
             confirmButton = {
                 TextButton(onClick = {
                     pickerState.selectedDateMillis?.let { millis ->
-                        deadline = Instant.ofEpochDay(millis / 86_400_000L).atZone(ZoneId.systemDefault()).toLocalDate()
+                        deadline = LocalDate.ofEpochDay(millis / 86_400_000L)
                     }
                     showDeadlinePicker = false
                 }) { Text("OK") }

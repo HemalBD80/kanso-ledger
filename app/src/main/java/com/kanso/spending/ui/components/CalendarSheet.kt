@@ -121,9 +121,7 @@ fun CalendarSheet(
                     week.forEach { date ->
                         Box(modifier = Modifier.weight(1f).padding(1.dp)) {
                             if (date != null) {
-                                val info = summary?.dayOfTimestamp(
-                                    date.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
-                                )
+                                val info = summary?.days?.get(date.toEpochDay())
                                 val hasIn = (info?.incomingCents ?: 0L) > 0L
                                 val hasOut = (info?.outgoingCents ?: 0L) > 0L
                                 val isToday = date == today
@@ -180,9 +178,7 @@ fun CalendarSheet(
             // ---- selected day detail
             selectedDay?.let { day ->
                 Spacer(Modifier.height(10.dp))
-                val info = summary?.dayOfTimestamp(
-                    day.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
-                )
+                val info = summary?.days?.get(day.toEpochDay())
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),

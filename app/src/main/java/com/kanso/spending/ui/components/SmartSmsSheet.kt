@@ -343,7 +343,7 @@ fun SmartSmsSheet(
             confirmButton = {
                 TextButton(onClick = {
                     pickerState.selectedDateMillis?.let { millis ->
-                        val picked = Instant.ofEpochDay(millis / 86_400_000L).atZone(zone).toLocalDate()
+                        val picked = LocalDate.ofEpochDay(millis / 86_400_000L)
                         if (showFromPicker) fromDate = picked else toDate = picked
                     }
                     showFromPicker = false; showToPicker = false
