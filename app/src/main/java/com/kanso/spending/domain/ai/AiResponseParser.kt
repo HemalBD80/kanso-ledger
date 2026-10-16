@@ -48,9 +48,10 @@ object AiResponseParser {
         if (choices.length() == 0) return null
         val message = choices.optJSONObject(0)?.optJSONObject("message") ?: return null
         // content is a string in the real API; tolerate an embedded object too.
+        val embedded = message.optJSONObject("content")
         return when {
             message.isNull("content") -> null
-            message.optJSONObject("content") != null -> message.optJSONObject("content").toString()
+            embedded != null -> embedded.toString()
             else -> message.optString("content").takeIf { it.isNotBlank() }
         }
     }
