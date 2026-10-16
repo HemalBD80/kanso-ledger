@@ -34,7 +34,7 @@ class SpendingRepository(
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val _currencySymbol = MutableStateFlow(
-        prefs.getString(KEY_CURRENCY_SYMBOL, "$") ?: "$"
+        prefs.getString(KEY_CURRENCY_SYMBOL, DEFAULT_CURRENCY_SYMBOL) ?: DEFAULT_CURRENCY_SYMBOL
     )
     val currencySymbol: StateFlow<String> = _currencySymbol.asStateFlow()
 
@@ -88,7 +88,7 @@ class SpendingRepository(
     }
 
     fun setCurrencySymbol(symbol: String) {
-        val clean = symbol.trim().ifEmpty { "$" }
+        val clean = symbol.trim().ifEmpty { DEFAULT_CURRENCY_SYMBOL }
         prefs.edit().putString(KEY_CURRENCY_SYMBOL, clean).apply()
         _currencySymbol.value = clean
     }
@@ -125,8 +125,10 @@ class SpendingRepository(
     }
 
     companion object {
-        /** Neutral starting cap applied when the user has not saved a budget for the month yet. */
-        const val DEFAULT_MONTHLY_BUDGET_CENTS: Long = 180_000L
+        /** Starting cap for a fresh install: a testing period starts with everything at zero. */
+        const val DEFAULT_MONTHLY_BUDGET_CENTS: Long = 0L
+        /** Bangladeshi Taka is the default ledger currency. */
+        const val DEFAULT_CURRENCY_SYMBOL: String = "\u09F3"
         private const val PREFS_NAME = "kanso_local_prefs"
         private const val KEY_CURRENCY_SYMBOL = "currency_symbol"
         private const val KEY_THEME_MODE = "theme_mode"

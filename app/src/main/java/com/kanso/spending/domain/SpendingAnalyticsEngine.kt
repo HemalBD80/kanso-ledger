@@ -26,7 +26,7 @@ object SpendingAnalyticsEngine {
         zoneId: ZoneId = ZoneId.systemDefault()
     ): MonthlyLedgerAnalytics {
         val totalSpent = monthExpenses.sumOf { it.amountCents }
-        val budget = if (monthlyBudgetCents > 0L) monthlyBudgetCents else 1L
+        val budget = monthlyBudgetCents.coerceAtLeast(0L)
         val remaining = budget - totalSpent
         val daysInMonth = yearMonth.lengthOfMonth()
         val currentMonth = YearMonth.from(today)
@@ -42,7 +42,7 @@ object SpendingAnalyticsEngine {
             else -> 1
         }
 
-        val budgetProgress = (totalSpent.toFloat() / budget.toFloat()).coerceAtLeast(0f)
+        val budgetProgress = if (budget > 0L) (totalSpent.toFloat() / budget.toFloat()).coerceAtLeast(0f) else 0f
         val monthElapsed = (elapsedDays.toFloat() / daysInMonth.toFloat()).coerceIn(0f, 1f)
         val pacingDelta = ((budgetProgress - monthElapsed) * 100f).roundToInt()
         val pacingStatus = when {

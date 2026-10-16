@@ -22,7 +22,7 @@ import com.kanso.spending.domain.CategoryBreakdownItem
 import com.kanso.spending.ui.theme.LocalKansoColors
 import kotlin.math.roundToLong
 
-private val CURRENCIES = listOf("$", "€", "£", "₹", "¥", "₩")
+private val CURRENCIES = listOf("\u09F3", "$", "€", "£", "₹", "¥", "₩")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -108,7 +108,7 @@ fun BudgetPlannerSheet(
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
-                    val overall = ((overallText.toDoubleOrNull() ?: 1800.0) * 100.0).roundToLong().coerceAtLeast(100L)
+                    val overall = ((overallText.toDoubleOrNull() ?: 0.0) * 100.0).roundToLong().coerceAtLeast(0L)
                     val map = catInputs.mapValues { (_, t) -> ((t.toDoubleOrNull() ?: 0.0) * 100.0).roundToLong().coerceAtLeast(0L) }
                     onSaveConfiguration(overall, selectedCurrency, map)
                     onDismiss()

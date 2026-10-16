@@ -25,7 +25,7 @@ import java.time.YearMonth
  */
 data class SpendingDashboardUiState(
     val selectedMonth: YearMonth = YearMonth.now(),
-    val currencySymbol: String = "$",
+    val currencySymbol: String = "\u09F3",
     val selectedCategoryFilter: SpendingCategory? = null,
     val searchQuery: String = "",
     val isDarkTheme: Boolean = false,

@@ -11,7 +11,7 @@ object CurrencyFormatter {
     private val standardFormat = DecimalFormat("#,##0.00", symbols)
     private val wholeFormat = DecimalFormat("#,##0", symbols)
 
-    fun formatCents(amountCents: Long, currencySymbol: String = "$", showPlusForPositive: Boolean = false): String {
+    fun formatCents(amountCents: Long, currencySymbol: String = "\u09F3", showPlusForPositive: Boolean = false): String {
         val sign = when {
             amountCents < 0L -> "-"
             showPlusForPositive && amountCents > 0L -> "+"
@@ -21,7 +21,7 @@ object CurrencyFormatter {
         return "$sign$currencySymbol${standardFormat.format(absValue)}"
     }
 
-    fun formatCentsCompact(amountCents: Long, currencySymbol: String = "$"): String {
+    fun formatCentsCompact(amountCents: Long, currencySymbol: String = "\u09F3"): String {
         val sign = if (amountCents < 0L) "-" else ""
         val absCents = abs(amountCents)
         return if (absCents % 100L == 0L) {

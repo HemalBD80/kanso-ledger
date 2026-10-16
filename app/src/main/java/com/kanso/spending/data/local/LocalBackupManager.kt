@@ -71,7 +71,7 @@ object LocalBackupManager {
     fun importFromJsonString(json: String): Result<LedgerSnapshot> {
         return runCatching {
             val root = JSONObject(json)
-            val currencySymbol = root.optString("currencySymbol", "$").ifBlank { "$" }
+            val currencySymbol = root.optString("currencySymbol", "\u09F3").ifBlank { "\u09F3" }
 
             val expenses = mutableListOf<ExpenseEntity>()
             val expensesArray = root.optJSONArray("expenses") ?: JSONArray()
