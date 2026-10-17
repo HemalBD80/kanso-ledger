@@ -51,7 +51,7 @@ import com.kanso.spending.ui.theme.LocalKansoColors
 fun AiConfigSection(
     store: AiSettingsStore,
     /** Real connectivity probe wired to the repository. Null hides the button. */
-    onTestConnection: ((String) -> Unit)? = null
+    onTestConnection: (((String) -> Unit) -> Unit)? = null
 ) {
     val colors = LocalKansoColors.current
 
