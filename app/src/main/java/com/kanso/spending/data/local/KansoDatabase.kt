@@ -41,7 +41,7 @@ import com.kanso.spending.data.local.entity.TransferEntity
         GoalContributionEntity::class,
         CategoryRuleEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class KansoDatabase : RoomDatabase() {
@@ -355,6 +355,21 @@ abstract class KansoDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v3 -> v4 (non-destructive): AI-assisted SMS understanding. The
+         * `sms_detections` table gains an advisory `payment_method_hint` filled
+         * from the model's `payment_method_suggestion`; it is a display hint only
+         * and never overrides a known account. Every other table is untouched and
+         * existing rows default to "" (no hint).
+         */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `sms_detections` ADD COLUMN `payment_method_hint` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: KansoDatabase? = null
 
@@ -365,7 +380,7 @@ abstract class KansoDatabase : RoomDatabase() {
                     KansoDatabase::class.java,
                     DATABASE_NAME
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

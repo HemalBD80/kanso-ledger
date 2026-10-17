@@ -16,10 +16,16 @@ object SmsParser {
 
     /** Tie-break order for keyword classification (most specific first). */
     private val TYPE_PRECEDENCE = listOf(
-        SmsTxType.REFUND, SmsTxType.FEE, SmsTxType.WITHDRAWAL, SmsTxType.DEPOSIT,
-        SmsTxType.PURCHASE, SmsTxType.MONEY_SENT, SmsTxType.MONEY_RECEIVED,
+        SmsTxType.REVERSAL, SmsTxType.REFUND, SmsTxType.FEE, SmsTxType.WITHDRAWAL, SmsTxType.DEPOSIT,
+        SmsTxType.CASHBACK, SmsTxType.PURCHASE, SmsTxType.MONEY_SENT, SmsTxType.MONEY_RECEIVED,
         SmsTxType.TRANSFER_SELF, SmsTxType.BALANCE_ONLY, SmsTxType.PROMO, SmsTxType.UNKNOWN
     )
+
+    /** Words that make an incoming credit a cashback/reward — never a refund. */
+    private val CASHBACK_HINTS = listOf("cashback", "cash back", "reward points", "reward", "bonus")
+
+    /** Words that mark a prior transaction being undone — never new income. */
+    private val REVERSAL_HINTS = listOf("reversal", "reversed", "chargeback", "charge back")
 
     private val merchantPatterns = listOf(
         // "at AGORA on 15/10/26 ..." / "at STAR KITCHEN. Ref ..."
@@ -43,9 +49,13 @@ object SmsParser {
             }
         }
 
-        // 2. Marketing messages never become transactions.
+        // 2. Marketing messages never become transactions — but ONLY when they
+        //    carry no real transaction reference. A genuine credit such as
+        //    "Congratulations! You have received Cashback Tk 25.00 ... TrxID ..."
+        //    legitimately opens with a congratulatory word; dropping it would
+        //    lose real money, so a stated TrxID keeps the message eligible.
         val promoHit = BuiltinSmsRules.PROMO_KEYWORDS.firstOrNull { lower.contains(it) }
-        if (promoHit != null) {
+        if (promoHit != null && !hasTransactionReference(text)) {
             return SmsParseResult.NotFinancial("promotional content ('$promoHit')")
         }
 
@@ -77,6 +87,18 @@ object SmsParser {
             if (BuiltinSmsRules.BALANCE_ONLY_KEYWORDS.any { lower.contains(it) }) {
                 type = SmsTxType.BALANCE_ONLY
             }
+        }
+
+        // Refine direction with reward/reversal vocabulary that may sit after the
+        // receive verb ("You have received Cashback ... TrxID ..."). Cashback is
+        // incoming money (never an ordinary refund); a reversal undoes a prior
+        // transaction and is represented explicitly, never as new income.
+        if (REVERSAL_HINTS.any { lower.contains(it) }) {
+            type = SmsTxType.REVERSAL
+        } else if (CASHBACK_HINTS.any { lower.contains(it) } &&
+            (type == SmsTxType.MONEY_RECEIVED || type == SmsTxType.UNKNOWN)
+        ) {
+            type = SmsTxType.CASHBACK
         }
 
         // 5. Amount extraction with fee/balance ranges excluded from the
@@ -132,6 +154,7 @@ object SmsParser {
             type == SmsTxType.BALANCE_ONLY || type == SmsTxType.PROMO -> null
             amountCents == null && feeCents == 0L -> "no amount found"
             type == SmsTxType.UNKNOWN -> "transaction type unclear"
+            type == SmsTxType.REVERSAL -> "reversal — match it to the original transaction before recording"
             type == SmsTxType.TRANSFER_SELF -> "possible transfer between own accounts"
             confidence < 65 -> "low confidence ($confidence%)"
             else -> null
@@ -140,10 +163,10 @@ object SmsParser {
         val action = when (type) {
             SmsTxType.BALANCE_ONLY, SmsTxType.PROMO -> LedgerAction.IGNORE
             SmsTxType.MONEY_SENT, SmsTxType.PURCHASE -> LedgerAction.RECORD_EXPENSE
-            SmsTxType.MONEY_RECEIVED, SmsTxType.REFUND -> LedgerAction.RECORD_INCOME
+            SmsTxType.MONEY_RECEIVED, SmsTxType.CASHBACK, SmsTxType.REFUND -> LedgerAction.RECORD_INCOME
             SmsTxType.WITHDRAWAL, SmsTxType.DEPOSIT, SmsTxType.TRANSFER_SELF -> LedgerAction.RECORD_TRANSFER
             SmsTxType.FEE -> LedgerAction.RECORD_FEE
-            SmsTxType.UNKNOWN -> LedgerAction.REVIEW_ONLY
+            SmsTxType.REVERSAL, SmsTxType.UNKNOWN -> LedgerAction.REVIEW_ONLY
         }
 
         val needsReview = when {
@@ -272,16 +295,40 @@ object SmsParser {
         return null
     }
 
-    private val timeFormats = listOf(
+    /** 24-hour date/time layouts, tried in order. */
+    private val plainTimeFormats = listOf(
         "dd/MM/yy HH:mm:ss", "dd/MM/yy HH:mm", "dd/MM/yyyy HH:mm:ss", "dd/MM/yyyy HH:mm",
         "d/M/yy HH:mm", "d/M/yyyy HH:mm",
-        "dd MMM yyyy h:mm a", "dd MMM yyyy hh:mm a", "dd MMM yyyy HH:mm",
-        "d MMM yyyy h:mm a", "d MMM yyyy HH:mm"
+        "dd MMM yyyy HH:mm", "d MMM yyyy HH:mm"
     )
+
+    /**
+     * 12-hour layouts. Tried FIRST when the text carries an AM/PM marker, because
+     * SimpleDateFormat silently ignores trailing text — parsing "16/10/2026 12:17 AM"
+     * with a 24-hour pattern would read 12:17 but drop the "AM".
+     */
+    private val amPmTimeFormats = listOf(
+        "dd/MM/yy h:mm a", "dd/MM/yy hh:mm a", "dd/MM/yyyy h:mm a", "dd/MM/yyyy hh:mm a",
+        "d/M/yy h:mm a", "d/M/yyyy h:mm a", "d/M/yyyy hh:mm a",
+        "dd MMM yyyy h:mm a", "dd MMM yyyy hh:mm a", "d MMM yyyy h:mm a"
+    )
+
+    private val AM_PM = Regex("(?i)\\b(am|pm)\\b")
+
+    /** True when the message states a real transaction reference (never a promo tell). */
+    private fun hasTransactionReference(text: String): Boolean =
+        SmsParsingRule.DEFAULT_REFERENCE_PATTERNS.any {
+            Regex(it, RegexOption.IGNORE_CASE).containsMatchIn(text)
+        }
 
     private fun parseTimestamp(raw: String, fallback: Long): Long {
         val candidate = raw.trim()
-        for (pattern in timeFormats) {
+        val order = if (AM_PM.containsMatchIn(candidate)) {
+            amPmTimeFormats + plainTimeFormats
+        } else {
+            plainTimeFormats
+        }
+        for (pattern in order) {
             try {
                 val fmt = SimpleDateFormat(pattern, Locale.ENGLISH)
                 fmt.isLenient = false

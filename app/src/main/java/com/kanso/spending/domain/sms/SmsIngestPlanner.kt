@@ -99,9 +99,11 @@ object SmsIngestPlanner {
 
     /**
      * Optional AI-assisted results, keyed by message index. When present for a
-     * message, that pre-validated result is used instead of the local parser's
-     * *uncertain* outcome. A confident local parse is never overridden — the
-     * deterministic parser stays authoritative and AI only fills genuine gaps.
+     * message, that pre-validated result is used instead of the local outcome —
+     * in v2.4 the configured model is the primary interpreter for eligible
+     * messages, and a validated AI extraction overrides even a confident local
+     * guess so new message formats work without a new template. A locally
+     * filtered non-financial message is never overridden.
      */
     fun plan(
         messages: List<RawInboundSms>,
@@ -115,12 +117,13 @@ object SmsIngestPlanner {
         var ignored = 0
 
         for ((index, message) in messages.withIndex()) {
-            // AI assist is consulted only for messages the local parser could not
-            // resolve with confidence; it can never replace a confident parse.
+            // The local parse decides eligibility (filtering) and is the fallback.
+            // An AI override wins for any eligible message; a local NotFinancial
+            // verdict stands and is never overridden.
             val local = SmsParser.parse(message.sender, message.body, message.receivedAtMillis)
             val result = when {
-                local is SmsParseResult.Ambiguous -> aiOverrides[index] ?: local
-                else -> local
+                local is SmsParseResult.NotFinancial -> local
+                else -> aiOverrides[index] ?: local
             }
             when (result) {
                 is SmsParseResult.NotFinancial -> ignored++

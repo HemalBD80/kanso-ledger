@@ -10,7 +10,9 @@ enum class SmsTxType {
     PURCHASE,         // card purchase at a merchant
     WITHDRAWAL,       // ATM / cash-out (a transfer to cash, not an expense)
     DEPOSIT,          // cash deposit into an account
-    REFUND,           // refund of a previous payment
+    CASHBACK,         // reward/bonus credited back — incoming money, NOT a refund
+    REFUND,           // refund of a previous payment (explicitly linked when known)
+    REVERSAL,         // reversal/chargeback of a previous transaction — never new income
     FEE,              // standalone fee/charge debited
     TRANSFER_SELF,    // user's own account-to-account transfer (best-effort)
     BALANCE_ONLY,     // balance inquiry/notice — never a transaction
@@ -58,7 +60,14 @@ data class ParsedSmsTransaction(
      * [com.kanso.spending.domain.ai.AiCategoryMapper] and discards anything that
      * does not resolve. Null for every locally-parsed message.
      */
-    val aiCategorySuggestion: String? = null
+    val aiCategorySuggestion: String? = null,
+    /**
+     * Optional payment-method hint from the AI path only. Mapped to a real
+     * [com.kanso.spending.data.model.PaymentMethod] by the repository via
+     * [com.kanso.spending.domain.ai.AiPaymentMethodMapper]; used only when the
+     * resolved account does not already determine the method. Null unless AI ran.
+     */
+    val aiPaymentMethodSuggestion: String? = null
 )
 
 /** Result of parsing one message: recognised financial content or not. */

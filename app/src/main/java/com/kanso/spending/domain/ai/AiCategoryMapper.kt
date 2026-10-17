@@ -12,17 +12,24 @@ import com.kanso.spending.data.model.SpendingCategory
  *     bundled keywords) produced nothing. A user rule or a bundled keyword hit
  *     always wins; the model can never override what the user already taught
  *     the app.
- *  2. It can only ever return an id from the real, bundled [SpendingCategory]
- *     set. A suggestion that does not map cleanly ("salary", "gift", "crypto",
- *     an unknown word, an empty string) returns null and the caller falls back
- *     to the local "other" default. The model therefore cannot invent a new
- *     category, and cannot push a transaction into a category the user never
- *     had.
+ *  2. It can only ever return an id from the real, bundled category set (the
+ *     [SpendingCategory] enum plus the "bills" bucket). A suggestion that does
+ *     not map cleanly ("salary", "gift", "crypto", an unknown word, an empty
+ *     string) returns null and the caller falls back to the local "other"
+ *     default. The model therefore cannot invent a new category, and cannot
+ *     push a transaction into a category the user never had.
  *
  * This keeps categorisation a *suggestion the user can override* while making
  * the AI incapable of corrupting the category taxonomy.
  */
 object AiCategoryMapper {
+
+    /** The ledger's "Bills & Utilities" bucket. Mobile/internet map here. */
+    private const val BILLS_ID = "bills"
+
+    /** Every id this mapper may ever return: the enum set plus the bills bucket. */
+    private val ALLOWED_IDS: Set<String> =
+        SpendingCategory.entries.map { it.id }.toSet() + BILLS_ID
 
     /** Lowercased keyword/phrase fragments → bundled category id. */
     private val keywordToCategory: Map<String, String> = linkedMapOf(
@@ -60,14 +67,23 @@ object AiCategoryMapper {
         // housing & utilities
         "housing" to SpendingCategory.HOUSING.id,
         "rent" to SpendingCategory.HOUSING.id,
-        "utilit" to SpendingCategory.HOUSING.id,
         "electric" to SpendingCategory.HOUSING.id,
         "gas bill" to SpendingCategory.HOUSING.id,
         "water" to SpendingCategory.HOUSING.id,
-        "internet" to SpendingCategory.HOUSING.id,
-        "broadband" to SpendingCategory.HOUSING.id,
-        "wifi" to SpendingCategory.HOUSING.id,
         "maintenance" to SpendingCategory.HOUSING.id,
+        // mobile & internet → the ledger's "Bills & Utilities" bucket
+        "bill" to BILLS_ID,
+        "utility" to BILLS_ID,
+        "internet" to BILLS_ID,
+        "broadband" to BILLS_ID,
+        "wifi" to BILLS_ID,
+        "mobile" to BILLS_ID,
+        "recharge" to BILLS_ID,
+        "top up" to BILLS_ID,
+        "topup" to BILLS_ID,
+        "data pack" to BILLS_ID,
+        "data package" to BILLS_ID,
+        "telecom" to BILLS_ID,
         // shopping & goods
         "shopping" to SpendingCategory.SHOPPING.id,
         "retail" to SpendingCategory.SHOPPING.id,
@@ -116,7 +132,7 @@ object AiCategoryMapper {
         if (text.isEmpty()) return null
 
         // Direct id hit (the model sometimes echoes "dining" verbatim).
-        SpendingCategory.entries.firstOrNull { it.id == text }?.let { return it.id }
+        if (text in ALLOWED_IDS) return text
 
         // Earliest-occurring keyword wins (the head noun: "grocery shopping" →
         // groceries, not shopping); ties broken by longest keyword.
@@ -126,6 +142,6 @@ object AiCategoryMapper {
             ?: return null
 
         // Only ever return an id that exists in the real bundled set.
-        return SpendingCategory.entries.firstOrNull { it.id == hit.value }?.id
+        return hit.value.takeIf { it in ALLOWED_IDS }
     }
 }

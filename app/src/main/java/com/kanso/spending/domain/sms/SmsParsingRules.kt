@@ -29,24 +29,32 @@ data class SmsParsingRule(
         senderPatterns.isEmpty() || senderPatterns.any { Regex(it, RegexOption.IGNORE_CASE).containsMatchIn(sender) }
 
     companion object {
-        // "BDT 1,250.00" / "Tk 500" / "BDT4,320.50" / plain "1,250.00 taka"
+        // Money number: thousands may or may not be comma-separated, so both
+        // "9,528.95" and "9528.95" parse whole (a leading-digit run, optional
+        // comma groups, optional 2-digit paisha).
+        private const val MONEY = "[0-9][0-9,]*(?:\\.[0-9]{1,2})?"
+
+        // "BDT 1,250.00" / "Tk 500" / "Tk 9528.95" / plain "1,250.00 taka"
         val DEFAULT_AMOUNT_PATTERNS = listOf(
-            "(?:BDT|Tk\\.?|BDT\\s*|Tk\\s*)([0-9]{1,3}(?:,[0-9]{2,3})*(?:\\.[0-9]{1,2})?)",
-            "([0-9]{1,3}(?:,[0-9]{2,3})*(?:\\.[0-9]{1,2})?)\\s*(?:BDT|Tk\\.?|taka)",
-            "(?:amount\\s*(?:of)?\\s*[:\\-]?\\s*)([0-9]{1,3}(?:,[0-9]{2,3})*(?:\\.[0-9]{1,2})?)"
+            "(?:BDT|Tk\\.?|BDT\\s*|Tk\\s*)($MONEY)",
+            "($MONEY)\\s*(?:BDT|Tk\\.?|taka)",
+            "(?:amount\\s*(?:of)?\\s*[:\\-]?\\s*)($MONEY)"
         )
         val DEFAULT_FEE_PATTERNS = listOf(
-            "(?:fee|charge|charge[sd]?|commission)\\s*(?:is|of)?\\s*[:\\-]?\\s*(?:BDT|Tk\\.?)?\\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\\.[0-9]{1,2})?)"
+            "(?:fee|charge|charges|charged|commission)\\s*(?:is|of)?\\s*[:\\-]?\\s*(?:BDT|Tk\\.?)?\\s*($MONEY)"
         )
         val DEFAULT_BALANCE_PATTERNS = listOf(
-            "(?:new\\s+balance|avl\\.?\\s*bal(?:ance)?\\.?|available\\s+balance|available\\s+limit|balance\\s*(?:is)?\\s*[:\\-]?|bal\\s*[:\\-]?)\\s*(?:BDT|Tk\\.?)?\\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\\.[0-9]{1,2})?)"
+            "(?:new\\s+balance|avl\\.?\\s*bal(?:ance)?\\.?|available\\s+balance|available\\s+limit|balance\\s*(?:is)?\\s*[:\\-]?|bal\\s*[:\\-]?)\\s*(?:BDT|Tk\\.?)?\\s*($MONEY)"
         )
         val DEFAULT_REFERENCE_PATTERNS = listOf(
-            "(?:TrxID|Ref(?:erence)?|TxnID|RefNo|RN)\\s*[:#\\-]?\\s*([A-Za-z0-9]{4,})"
+            "(?:TrxID|Ref(?:erence)?|TxnID|RefNo|RN)\\s*[:#\\-]?\\s*([A-Za-z0-9]{4,})",
+            // "Transaction ID is 000319000740" — leading zeros are preserved
+            // because the capture is kept as a String, never parsed as a number.
+            "(?:Transaction|Txn)\\s*(?:ID|Id|id|No|Number)\\s*(?:is|[:#\\-])?\\s*([A-Za-z0-9]{4,})"
         )
         val DEFAULT_ACCOUNT_PATTERNS = listOf(
             // Keep masked leading '*' (e.g. "***4512") in the captured hint.
-            "(?:A\\/c|Acct|Account|Card)\\s*(?:no\\.?|number)?\\s*[:#\\-]?\\s*([*0-9][0-9*]{1,})"
+            "(?:A\\/c|Acct|Account|Card|AC)\\s*(?:no\\.?|number)?\\s*[:#\\-]?\\s*([*0-9][0-9*]{1,})"
         )
         val DEFAULT_IGNORE_PATTERNS = listOf(
             "t&c\\s*apply",

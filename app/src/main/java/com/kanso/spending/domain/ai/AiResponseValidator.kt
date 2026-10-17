@@ -63,6 +63,12 @@ object AiResponseValidator {
             return AiValidationResult.NotFinancial(proposal.modelReasoningOr("Model marked the message non-financial"))
         }
 
+        // The model may set is_financial=true while calling the type
+        // "non_financial"; honour the more specific signal rather than guessing.
+        if (proposal.type?.trim()?.let { normalizeType(it) } == "NON_FINANCIAL") {
+            return AiValidationResult.NotFinancial("Model typed the message non-financial.")
+        }
+
         // GLM 5.3 Flash returns provider: null even for clearly financial messages
         // (it honors "never guess"). The sender is a reliable, already-known
         // fallback, so a null provider must NOT reject a correct extraction.
@@ -113,12 +119,14 @@ object AiResponseValidator {
         val direction = proposal.direction?.trim()?.lowercase(Locale.ROOT)
 
         val needsReview = when {
+            type == SmsTxType.REVERSAL -> true
             warnings.isNotEmpty() -> true
             confidencePct < AUTO_COMMIT_CONFIDENCE -> true
             direction != null && direction !in KNOWN_DIRECTIONS -> true
             else -> false
         }
         val reason = when {
+            type == SmsTxType.REVERSAL -> "Reversal — match it to the original transaction before recording."
             warnings.isNotEmpty() -> "Model flagged: ${warnings.joinToString("; ")}"
             confidencePct < AUTO_COMMIT_CONFIDENCE -> "Confidence $confidencePct is below the auto-commit threshold."
             else -> null
@@ -158,6 +166,11 @@ object AiResponseValidator {
         confidencePct: Int
     ): ParsedSmsTransaction {
         val reference = proposal.reference?.trim()?.takeIf { it.isNotEmpty() }
+        // Evidence is advisory context for the reviewer; it never changes a value.
+        val evidence = proposal.evidence?.trim()?.takeIf { it.isNotEmpty() }
+        val finalReason = listOfNotNull(reviewReason, evidence?.let { "Evidence: $it" })
+            .joinToString(" · ")
+            .ifBlank { null }
         // Reuse the local parser's fingerprint so AI and local parses of the same
         // message collapse to a single record — dedup is never amount-only.
         val fingerprint = SmsParser.fingerprint(
@@ -182,9 +195,10 @@ object AiResponseValidator {
             reportedDirection = proposal.direction?.trim(),
             confidence = confidencePct,
             needsReview = needsReview,
-            reviewReason = reviewReason,
+            reviewReason = finalReason,
             fingerprint = fingerprint,
-            aiCategorySuggestion = proposal.categorySuggestion?.trim()?.takeIf { it.isNotEmpty() }
+            aiCategorySuggestion = proposal.categorySuggestion?.trim()?.takeIf { it.isNotEmpty() },
+            aiPaymentMethodSuggestion = proposal.paymentMethodSuggestion?.trim()?.takeIf { it.isNotEmpty() }
         )
     }
 
@@ -199,14 +213,24 @@ object AiResponseValidator {
         if (needsReview) return LedgerAction.REVIEW_ONLY
         return when (type) {
             SmsTxType.BALANCE_ONLY, SmsTxType.PROMO -> LedgerAction.IGNORE
-            SmsTxType.UNKNOWN -> LedgerAction.REVIEW_ONLY
-            SmsTxType.MONEY_SENT, SmsTxType.PURCHASE, SmsTxType.WITHDRAWAL -> LedgerAction.RECORD_EXPENSE
-            SmsTxType.MONEY_RECEIVED, SmsTxType.DEPOSIT -> LedgerAction.RECORD_INCOME
-            SmsTxType.REFUND -> LedgerAction.RECORD_INCOME
-            SmsTxType.TRANSFER_SELF -> LedgerAction.RECORD_TRANSFER
+            SmsTxType.UNKNOWN, SmsTxType.REVERSAL -> LedgerAction.REVIEW_ONLY
+            SmsTxType.MONEY_SENT, SmsTxType.PURCHASE -> LedgerAction.RECORD_EXPENSE
+            // Cashback is incoming money; a refund is incoming money with an
+            // explicit refund source. Neither is ever an expense reduction.
+            SmsTxType.MONEY_RECEIVED, SmsTxType.CASHBACK, SmsTxType.REFUND -> LedgerAction.RECORD_INCOME
+            // Withdrawals and deposits move cash, and self-transfers move money
+            // between the user's own accounts — none is income or expense.
+            SmsTxType.WITHDRAWAL, SmsTxType.DEPOSIT, SmsTxType.TRANSFER_SELF -> LedgerAction.RECORD_TRANSFER
             SmsTxType.FEE -> LedgerAction.RECORD_FEE
         }
     }
+
+    /** Fold spaces/hyphens/underscores to a single separator and upper-case. */
+    private fun normalizeType(raw: String): String = raw.trim()
+        .uppercase(Locale.ROOT)
+        .replace(Regex("[\\s\\-]+"), "_")
+        .replace(Regex("_+"), "_")
+        .trim('_')
 
     /**
      * Lenient string→enum mapping; anything unrecognised becomes UNKNOWN.
@@ -214,26 +238,29 @@ object AiResponseValidator {
      * Normalisation is deliberately generous because GLM 5.3 Flash emits types
      * inconsistently — observed live: "send_money", "received", "debit_card_
      * purchase", "ATM withdrawal" (with a space), "fee", "refund",
-     * "balance_inquiry". Spaces, hyphens and underscores are all folded to a
-     * single separator, case is ignored, and the real vocabulary is covered.
+     * "balance_inquiry". The v2.4 vocabulary adds expense, income, cashback,
+     * reversal, cash_withdrawal, cash_deposit and balance_notification. A bare
+     * "transfer" is treated as a self-transfer (neutral) so an account-to-account
+     * move is never miscounted as income or expense.
      */
     private fun mapType(raw: String?): SmsTxType {
-        val key = raw?.trim()
-            ?.uppercase(Locale.ROOT)
-            ?.replace(Regex("[\\s\\-]+"), "_")
-            ?.replace(Regex("_+"), "_")
-            ?.trim('_')
-            .orEmpty()
+        val key = raw?.let { normalizeType(it) }.orEmpty()
         return when (key) {
-            "MONEY_SENT", "SENT", "SEND", "SEND_MONEY", "MONEY_TRANSFER", "PAYMENT", "TRANSFER_OUT", "OUT" -> SmsTxType.MONEY_SENT
-            "MONEY_RECEIVED", "RECEIVED", "RECEIVE", "MONEY_IN", "CREDIT", "TRANSFER_IN", "IN" -> SmsTxType.MONEY_RECEIVED
-            "PURCHASE", "DEBIT", "SPEND", "CARD_PURCHASE", "DEBIT_CARD_PURCHASE", "CARD_SPEND", "POINT_OF_SALE", "POS" -> SmsTxType.PURCHASE
-            "WITHDRAWAL", "CASH_OUT", "CASHOUT", "ATM", "ATM_WITHDRAWAL", "ATM_CASH_OUT" -> SmsTxType.WITHDRAWAL
-            "DEPOSIT", "CASH_IN", "CASHIN" -> SmsTxType.DEPOSIT
-            "REFUND", "REVERSAL", "CHARGEBACK", "REFUNDED" -> SmsTxType.REFUND
-            "FEE", "CHARGE", "SERVICE_FEE", "FEE_CHARGED" -> SmsTxType.FEE
-            "TRANSFER_SELF", "SELF_TRANSFER", "OWN_TRANSFER" -> SmsTxType.TRANSFER_SELF
-            "BALANCE_ONLY", "BALANCE", "BALANCE_NOTICE", "BALANCE_INQUIRY", "BALANCE_ENQUIRY", "ACCOUNT_BALANCE" -> SmsTxType.BALANCE_ONLY
+            "EXPENSE", "DEBIT", "PURCHASE", "PAYMENT", "SPEND", "SPENT",
+            "CARD_PURCHASE", "DEBIT_CARD_PURCHASE", "CARD_SPEND", "POINT_OF_SALE", "POS",
+            "BILL_PAYMENT", "RECHARGE", "MOBILE_RECHARGE" -> SmsTxType.PURCHASE
+            "MONEY_SENT", "SENT", "SEND", "SEND_MONEY", "MONEY_TRANSFER", "TRANSFER_OUT", "OUT" -> SmsTxType.MONEY_SENT
+            "INCOME", "MONEY_RECEIVED", "RECEIVED", "RECEIVE", "MONEY_IN", "CREDIT",
+            "TRANSFER_IN", "IN", "DEPOSIT_IN" -> SmsTxType.MONEY_RECEIVED
+            "CASHBACK", "CASH_BACK", "REWARD", "REWARDS", "BONUS", "REWARD_POINTS" -> SmsTxType.CASHBACK
+            "REFUND", "REFUNDED", "RETURNED" -> SmsTxType.REFUND
+            "REVERSAL", "REVERSED", "CHARGEBACK", "CHARGE_BACK" -> SmsTxType.REVERSAL
+            "WITHDRAWAL", "CASH_WITHDRAWAL", "CASH_OUT", "CASHOUT", "ATM", "ATM_WITHDRAWAL", "ATM_CASH_OUT" -> SmsTxType.WITHDRAWAL
+            "DEPOSIT", "CASH_DEPOSIT", "CASH_IN", "CASHIN" -> SmsTxType.DEPOSIT
+            "FEE", "CHARGE", "SERVICE_FEE", "TRANSACTION_FEE", "FEE_CHARGED" -> SmsTxType.FEE
+            "TRANSFER", "TRANSFER_SELF", "SELF_TRANSFER", "OWN_TRANSFER", "BETWEEN_OWN_ACCOUNTS" -> SmsTxType.TRANSFER_SELF
+            "BALANCE_ONLY", "BALANCE", "BALANCE_NOTICE", "BALANCE_NOTIFICATION",
+            "BALANCE_INQUIRY", "BALANCE_ENQUIRY", "ACCOUNT_BALANCE" -> SmsTxType.BALANCE_ONLY
             "PROMO", "MARKETING", "OFFER", "PROMOTION" -> SmsTxType.PROMO
             else -> SmsTxType.UNKNOWN
         }

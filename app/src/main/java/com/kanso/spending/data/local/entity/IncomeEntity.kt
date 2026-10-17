@@ -31,7 +31,7 @@ data class IncomeEntity(
     @ColumnInfo(name = "amount_cents")
     val amountCents: Long,
 
-    /** [MoneySource] id: initial_balance, salary, freelance, gift, refund, transfer_in, other. */
+    /** [MoneySource] id: initial_balance, salary, freelance, gift, cashback, refund, transfer_in, other. */
     @ColumnInfo(name = "source_id")
     val sourceId: String,
 

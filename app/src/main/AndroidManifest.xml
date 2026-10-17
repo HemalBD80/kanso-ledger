@@ -10,11 +10,13 @@
 
          INTERNET exists ONLY for the optional, off-by-default AI-assisted
          parsing feature. It is closed by three user-controlled gates (feature
-         disabled, no consent, no credential) before any text leaves the device,
-         and only redacted financial text from messages the LOCAL parser found
-         ambiguous is ever sent. The offline ledger, manual tracking, local SMS
-         parsing, import and all calculations work fully with AI off and would
-         work with INTERNET removed entirely. See README "External AI". -->
+         disabled, no consent, no credential) before any text leaves the device.
+         When AI is on, only messages the LOCAL filter found possibly-financial
+         are sent — obvious OTPs, promotional and unrelated messages are dropped
+         on-device first — and text is redacted by the prompt builder before it
+         leaves. The offline ledger, manual tracking, local SMS parsing, import
+         and all calculations work fully with AI off and would work with
+         INTERNET removed entirely. See README "External AI". -->
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

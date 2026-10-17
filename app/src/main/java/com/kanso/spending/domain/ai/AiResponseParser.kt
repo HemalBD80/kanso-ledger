@@ -102,24 +102,36 @@ object AiResponseParser {
     }
 
     private fun toProposal(o: JSONObject): AiTransactionProposal = AiTransactionProposal(
-        isFinancial = o.optBoolean("isFinancial", false),
-        provider = o.optStringOrNull("provider"),
-        type = o.optStringOrNull("type"),
-        amount = o.optStringOrNull("amount"),
-        currency = o.optStringOrNull("currency"),
-        timestamp = o.optStringOrNull("timestamp"),
-        reference = o.optStringOrNull("reference"),
-        fee = o.optStringOrNull("fee"),
-        merchant = o.optStringOrNull("merchant"),
-        accountHint = o.optStringOrNull("accountHint"),
-        reportedBalance = o.optStringOrNull("reportedBalance"),
-        direction = o.optStringOrNull("direction"),
+        isFinancial = o.optBoolean("is_financial", o.optBoolean("isFinancial", false)),
+        provider = o.firstString("provider"),
+        type = o.firstString("transaction_type", "type"),
+        amount = o.firstString("amount_bdt", "amount"),
+        currency = o.firstString("currency"),
+        timestamp = o.firstString("transaction_timestamp", "timestamp"),
+        reference = o.firstString("transaction_reference", "reference"),
+        fee = o.firstString("fee_bdt", "fee"),
+        merchant = o.firstString("merchant_or_recipient", "merchant"),
+        accountHint = o.firstString("account_hint", "accountHint"),
+        reportedBalance = o.firstString("reported_balance_bdt", "reportedBalance"),
+        direction = o.firstString("direction"),
         confidence = if (o.has("confidence") && !o.isNull("confidence")) o.optDouble("confidence", 0.0) else null,
-        categorySuggestion = o.optStringOrNull("categorySuggestion"),
+        categorySuggestion = o.firstString("category_suggestion", "categorySuggestion"),
+        paymentMethodSuggestion = o.firstString("payment_method_suggestion", "paymentMethodSuggestion"),
+        evidence = o.firstString("evidence"),
         warnings = o.optJSONArray("warnings")?.let { arr ->
             (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotBlank() } }
         }
     )
+
+    /** First non-blank string among the given keys (new snake_case, then legacy camelCase). */
+    private fun JSONObject.firstString(vararg keys: String): String? {
+        for (key in keys) {
+            if (has(key) && !isNull(key)) {
+                optString(key).takeIf { it.isNotBlank() }?.let { return it }
+            }
+        }
+        return null
+    }
 
     /** JSONObject returns "" for JSON null — treat blank/absent as a real null. */
     private fun JSONObject.optStringOrNull(key: String): String? =

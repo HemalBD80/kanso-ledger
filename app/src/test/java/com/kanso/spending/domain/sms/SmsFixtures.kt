@@ -79,6 +79,39 @@ object SmsFixtures {
     const val AMBIGUOUS_UNFAMILIAR =
         "Money movement of BDT for your transaction has been processed today. Contact branch for detail."
 
+    // ---- v2.4 real-world formats (supplied examples + extra fictional) ----
+    /** Example A — bank debit with masked account and a 12-hour timestamp. */
+    const val TRUST_DEBIT =
+        "TRUST MONEY Txn\nTK 206.00 DEBIT\nAC No 033***558\n16/10/2026 12:17 AM\nBalance TK 9528.95"
+
+    /** Example B — cashback credit that opens with "Congratulations!". */
+    const val BKASH_CASHBACK =
+        "Congratulations! You have received Cashback Tk 25.00. Balance Tk 128.58. TrxID DJE9WXYIXT at 14/10/2026 17:03. Thank you for availing bKash Reward Points."
+
+    /** Example C — mobile recharge with a leading-zero "Transaction ID". */
+    const val MOBILE_RECHARGE =
+        "Transaction ID is 000319000740 . 8801513925313 has recharged your account with 120.00 Taka."
+
+    /** A cashback with no TrxID is indistinguishable from a promo — still filtered. */
+    const val CASHBACK_PROMO =
+        "Congratulations! Get 25% cashback on every recharge. Offer valid till 30 Nov. T&C apply."
+
+    /** A reversal of a prior card transaction — never new income. */
+    const val CARD_REVERSAL =
+        "Reversal of BDT 1,150.00 on Credit Card *7788 from SHOPMART. Available Limit BDT 46,150.00. Ref: RVSL99812. 13/10/26 12:30"
+
+    /** A self-transfer between the user's own wallet and bank account. */
+    const val WALLET_TRANSFER_SELF =
+        "You have transferred BDT 2,000.00 to your bank A/c ***4512. New Balance BDT 5,320.50. TrxID TRX1122AB. 15/10/26 09:00"
+
+    /** A balance-only notice: carries money text but never a transaction. */
+    const val BKASH_BALANCE_NOTICE =
+        "Your bKash Account balance is Tk 1,500.00 as of 15/10/26 09:00. Dial *247# for details."
+
+    /** A standalone bank fee — the fee IS the debit. */
+    const val BANK_CREDIT_SALARY =
+        "BDT 42,000.00 credited to A/c ***4512 as SALARY on 02/10/26 09:30. Bal BDT 60,120.90. Ref: CR900999"
+
     /** Parse helper: fixed received time so fingerprints are deterministic. */
     fun parse(fixture: String, sender: String = "bKash", receivedAt: Long = 1_760_000_000_000L): SmsParseResult =
         SmsParser.parse(sender, fixture, receivedAt)

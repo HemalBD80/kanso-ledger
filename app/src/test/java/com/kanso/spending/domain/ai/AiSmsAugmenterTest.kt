@@ -82,8 +82,8 @@ class AiSmsAugmenterTest {
     }
 
     @Test
-    fun confidentLocalParseIsNeverOverriddenAndCostsNoApiCall() {
-        val (aug, consulted) = augmenter { extracted() }
+    fun withAiDisabledConfidentLocalParsesCostNoApiCall() {
+        val (aug, consulted) = augmenter(enabled = false) { extracted() }
         val result = aug.buildOverridesSync(
             listOf(
                 msg(SmsFixtures.BKASH_SENT),
@@ -91,24 +91,35 @@ class AiSmsAugmenterTest {
                 msg(SmsFixtures.CARD_PURCHASE, "City Bank")
             )
         )
-        assertEquals("deterministic parser stays authoritative — no spend", 0, consulted.size)
+        assertEquals("disabled AI never spends", 0, consulted.size)
         assertTrue(result.overrides.isEmpty())
         assertEquals(3, result.routes.count { it == AiSmsAugmenter.Route.LOCAL_CONFIDENT })
     }
 
     @Test
-    fun onlyGenuinelyAmbiguousMessagesReachTheAi() {
+    fun withAiEnabledEveryPotentiallyFinancialMessageIsInterpreted() {
         val (aug, consulted) = augmenter { extracted() }
         aug.buildOverridesSync(
             listOf(
-                msg(SmsFixtures.BKASH_SENT),                       // confident
-                msg(SmsFixtures.BKASH_PROMO),                       // not financial
-                msg(SmsFixtures.AMBIGUOUS_UNFAMILIAR, "HBL Bank"),   // ambiguous → AI
-                msg(SmsFixtures.BKASH_OTP)                          // not financial
+                msg(SmsFixtures.BKASH_SENT),                       // confident, still sent
+                msg(SmsFixtures.BANK_SALARY_CREDIT, "HBL Bank"),   // confident, still sent
+                msg(SmsFixtures.AMBIGUOUS_UNFAMILIAR, "HBL Bank")   // ambiguous, sent
             )
         )
-        assertEquals(1, consulted.size)
-        assertEquals(SmsFixtures.AMBIGUOUS_UNFAMILIAR, consulted.single().body)
+        assertEquals("AI is the primary interpreter for eligible messages", 3, consulted.size)
+    }
+
+    @Test
+    fun nonFinancialMessagesAreNeverSentEvenWhenAiIsEnabled() {
+        val (aug, consulted) = augmenter { extracted() }
+        aug.buildOverridesSync(
+            listOf(
+                msg(SmsFixtures.BKASH_PROMO),                       // filtered
+                msg(SmsFixtures.BKASH_OTP),                         // filtered
+                msg(SmsFixtures.CASHBACK_PROMO)                     // filtered
+            )
+        )
+        assertTrue("only the eligible subset leaves the device", consulted.isEmpty())
     }
 
     // --------------------------------------------------------- resolution paths
@@ -134,7 +145,6 @@ class AiSmsAugmenterTest {
     fun failedAiDegradesToTheLocalAmbiguousResultNeverDropsTheMessage() {
         val failures = listOf(
             AiSmsInterpreter.Outcome.Failed("rate limited"),
-            AiSmsInterpreter.Outcome.NotFinancial("model said no"),
             AiSmsInterpreter.Outcome.Failed("unparseable")
         )
         for (f in failures) {
@@ -152,6 +162,25 @@ class AiSmsAugmenterTest {
     }
 
     @Test
+    fun aiNotFinancialDropsALocallyAmbiguousMessageButKeepsAConfidentOne() {
+        // Ambiguous local + model says non-financial → dropped (no ledger, no review).
+        val (augDrop, _) = augmenter { AiSmsInterpreter.Outcome.NotFinancial("not money") }
+        val ambiguous = listOf(msg(SmsFixtures.AMBIGUOUS_UNFAMILIAR, "HBL Bank"))
+        val dropped = augDrop.buildOverridesSync(ambiguous)
+        assertEquals(AiSmsAugmenter.Route.AI_NOT_FINANCIAL, dropped.routes.single())
+        assertTrue(dropped.overrides[0] is SmsParseResult.NotFinancial)
+        assertEquals(0, SmsIngestPlanner.plan(ambiguous, context(), dropped.overrides).items.size)
+
+        // Confident local + model says non-financial → local is kept (never lose money).
+        val (augKeep, _) = augmenter { AiSmsInterpreter.Outcome.NotFinancial("not money") }
+        val confident = listOf(msg(SmsFixtures.BKASH_SENT))
+        val kept = augKeep.buildOverridesSync(confident)
+        assertEquals(AiSmsAugmenter.Route.AI_DECLINED, kept.routes.single())
+        assertTrue(kept.overrides.isEmpty())
+        assertEquals(1, SmsIngestPlanner.plan(confident, context(), kept.overrides).items.size)
+    }
+
+    @Test
     fun aThrowingAiCallIsCaughtPerMessageAndCannotAbortTheBatch() {
         val (aug, _) = augmenter { error("network exploded") }
         val result = aug.buildOverridesSync(
@@ -161,7 +190,7 @@ class AiSmsAugmenterTest {
             )
         )
         assertEquals(AiSmsAugmenter.Route.AI_FALLBACK, result.routes[0])
-        assertEquals(AiSmsAugmenter.Route.LOCAL_CONFIDENT, result.routes[1])
+        assertEquals(AiSmsAugmenter.Route.AI_FALLBACK, result.routes[1])
         assertTrue(result.overrides.isEmpty())
     }
 
@@ -218,7 +247,7 @@ class AiSmsAugmenterTest {
             )
         )
         assertEquals(4, result.routes.size)
-        assertEquals(2, result.aiConsulted)
+        assertEquals(3, result.aiConsulted)
         assertEquals(1, result.aiResolved)
         assertEquals(1, result.overrides.size)
     }

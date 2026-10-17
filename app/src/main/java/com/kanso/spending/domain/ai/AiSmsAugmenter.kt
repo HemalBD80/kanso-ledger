@@ -8,21 +8,26 @@ import com.kanso.spending.domain.sms.SmsParser
  * Decides *which* messages, if any, are worth an external AI call, and builds
  * the override map [com.kanso.spending.domain.sms.SmsIngestPlanner] consumes.
  *
- * The rules, in order:
+ * v2.4 treats the configured model as the PRIMARY interpreter for potentially
+ * financial messages, because Bangladeshi bank / wallet / recharge / bill texts
+ * vary far beyond any template list. The rules, in order:
  *
- *  1. **Filter locally first.** The deterministic parser decides. Messages it
- *     reads as not-financial are dropped here and never transmitted — the
- *     inbox is never uploaded, only the subset the local rules already flag as
- *     possibly-financial-but-unclear.
- *  2. **A confident local parse is never overridden.** If the local parser
- *     already resolved the message with confidence, AI is not consulted at all:
- *     this keeps cost bounded, keeps the deterministic parser authoritative,
- *     and means an AI outage cannot degrade messages that already worked.
- *  3. **Only genuine ambiguity goes out.** Just the `Ambiguous` case is sent,
- *     redacted by [AiPromptBuilder] before it leaves the device.
- *  4. **Failure degrades, never blocks.** If the AI path returns anything other
- *     than a validated extraction, the local ambiguous result stands and the
- *     message reaches the review queue exactly as it would have offline.
+ *  1. **Filter locally first.** The deterministic parser drops obvious OTPs,
+ *     marketing and unrelated text here — those messages are NEVER transmitted.
+ *     Only messages the local rules read as financial/possibly-financial leave
+ *     the device, redacted by [AiPromptBuilder] first.
+ *  2. **AI interprets eligible messages.** When AI is enabled, every eligible
+ *     message is sent for interpretation and a validated extraction overrides
+ *     the local guess, so a new message format works without a new template.
+ *  3. **Failure degrades, never blocks.** If the model errors, returns unusable
+ *     JSON, or fails validation, the local result stands: a confident local parse
+ *     is kept, and an unresolved one still reaches the review queue exactly as it
+ *     would offline. Nothing is dropped, guessed, or crashed by an AI outage.
+ *  4. **A confident local parse is never silently discarded.** If the model calls
+ *     a message non-financial but the deterministic parser was confident it is
+ *     financial, the local result is kept (losing real money is worse than a
+ *     review item); only a locally-*ambiguous* message is dropped on the model's
+ *     non-financial verdict.
  *
  * The AI call is injected as a function so the whole pipeline is unit-testable
  * with no network and no credential.
@@ -36,13 +41,17 @@ class AiSmsAugmenter(
 
     /** What happened to one message, for reporting/observability. */
     enum class Route {
-        /** Local parser was already confident — AI never asked. */
+        /** Local parser was already confident and AI was OFF — AI never asked. */
         LOCAL_CONFIDENT,
         /** Filtered as non-financial locally — never transmitted. */
         LOCAL_NOT_FINANCIAL,
-        /** AI was consulted and produced a validated extraction. */
+        /** AI was consulted and produced a validated extraction (used). */
         AI_RESOLVED,
-        /** AI was consulted but could not resolve it — local result stands. */
+        /** AI called a locally-ambiguous message non-financial — dropped. */
+        AI_NOT_FINANCIAL,
+        /** AI called a confident local parse non-financial — local kept. */
+        AI_DECLINED,
+        /** AI was consulted but failed/unusable — local result stands. */
         AI_FALLBACK,
         /** AI not consulted at all because the master switch is off. */
         AI_DISABLED
@@ -54,8 +63,12 @@ class AiSmsAugmenter(
         /** Per-message routing, in input order. */
         val routes: List<Route>
     ) {
-        /** Messages actually transmitted for AI help (excludes the disabled path). */
-        val aiConsulted: Int get() = routes.count { it == Route.AI_RESOLVED || it == Route.AI_FALLBACK }
+        /** Messages actually transmitted for AI help. */
+        val aiConsulted: Int
+            get() = routes.count {
+                it == Route.AI_RESOLVED || it == Route.AI_FALLBACK ||
+                    it == Route.AI_NOT_FINANCIAL || it == Route.AI_DECLINED
+            }
         val aiResolved: Int get() = routes.count { it == Route.AI_RESOLVED }
     }
 
@@ -70,34 +83,40 @@ class AiSmsAugmenter(
         val active = enabled()
         for ((index, message) in messages.withIndex()) {
             val local = SmsParser.parse(message.sender, message.body, message.receivedAtMillis)
-            when (local) {
-                // Filtered locally — never transmitted.
-                is SmsParseResult.NotFinancial -> routes += Route.LOCAL_NOT_FINANCIAL
 
-                // Local parser already confident: AI is neither needed nor asked.
-                is SmsParseResult.Financial -> routes += Route.LOCAL_CONFIDENT
+            // 1. Locally non-financial — never transmitted, never overridden.
+            if (local is SmsParseResult.NotFinancial) {
+                routes += Route.LOCAL_NOT_FINANCIAL
+                continue
+            }
 
-                is SmsParseResult.Ambiguous -> {
-                    if (!active) {
-                        // AI disabled: identical to today's offline behaviour,
-                        // and — importantly — no request is ever made.
-                        routes += Route.AI_DISABLED
-                        continue
-                    }
-                    val outcome = runCatching { consultAi(message) }
-                        .getOrDefault(AiSmsInterpreter.Outcome.Failed("AI consultation threw."))
-                    when (outcome) {
-                        is AiSmsInterpreter.Outcome.Extracted -> {
-                            // Re-validate through the same result the parser
-                            // would have produced, so the planner sees a normal
-                            // SmsParseResult and every downstream rule applies.
-                            overrides[index] = SmsParseResult.Financial(outcome.transaction)
-                            routes += Route.AI_RESOLVED
-                        }
-                        // Not-financial, failed, or unavailable → local stands.
-                        else -> routes += Route.AI_FALLBACK
+            // 2. AI off: byte-for-byte the offline behaviour, no request made.
+            if (!active) {
+                routes += if (local is SmsParseResult.Financial) Route.LOCAL_CONFIDENT else Route.AI_DISABLED
+                continue
+            }
+
+            // 3. AI on: interpret every eligible message.
+            val outcome = runCatching { consultAi(message) }
+                .getOrDefault(AiSmsInterpreter.Outcome.Failed("AI consultation threw."))
+            when (outcome) {
+                is AiSmsInterpreter.Outcome.Extracted -> {
+                    overrides[index] = SmsParseResult.Financial(outcome.transaction)
+                    routes += Route.AI_RESOLVED
+                }
+                is AiSmsInterpreter.Outcome.NotFinancial -> {
+                    if (local is SmsParseResult.Ambiguous) {
+                        // Local was unsure and the model says it is not financial:
+                        // drop it (no ledger row, no review noise).
+                        overrides[index] = SmsParseResult.NotFinancial(outcome.reason)
+                        routes += Route.AI_NOT_FINANCIAL
+                    } else {
+                        // Local was confident about money — never discard it on the
+                        // model's say-so. Keep the local result.
+                        routes += Route.AI_DECLINED
                     }
                 }
+                is AiSmsInterpreter.Outcome.Failed -> routes += Route.AI_FALLBACK
             }
         }
         return Result(overrides, routes)

@@ -2,7 +2,9 @@ package com.kanso.spending.data.repository
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.kanso.spending.data.ai.AiDecisionCache
 import com.kanso.spending.data.ai.AiSettingsStore
+import com.kanso.spending.data.ai.CachingAiTransport
 import com.kanso.spending.data.ai.HttpAiTransport
 import com.kanso.spending.data.local.LocalBackupManager
 import com.kanso.spending.data.local.dao.SpendingDao
@@ -29,6 +31,7 @@ import com.kanso.spending.domain.accounts.AccountStateFactory
 import com.kanso.spending.domain.ai.AiCategoryMapper
 import com.kanso.spending.domain.ai.AiConnectionProbe
 import com.kanso.spending.domain.ai.AiInsightsNarrator
+import com.kanso.spending.domain.ai.AiPaymentMethodMapper
 import com.kanso.spending.domain.ai.AiSmsAugmenter
 import com.kanso.spending.domain.ai.AiSmsInterpreter
 import com.kanso.spending.domain.categorization.CategoryRule
@@ -174,7 +177,10 @@ class SpendingRepository(
     // offline behaviour the app had before AI existed.
 
     private val aiSettings = AiSettingsStore(context.applicationContext)
-    private val aiInterpreter = AiSmsInterpreter(HttpAiTransport())
+    private val aiCache = AiDecisionCache(context.applicationContext)
+    // Read-through cache: a repeated broadcast / re-import / restart reuses the
+    // model's prior reply instead of paying for the same interpretation twice.
+    private val aiInterpreter = AiSmsInterpreter(CachingAiTransport(HttpAiTransport(), aiCache))
 
     private val aiAugmenter = AiSmsAugmenter(
         consultAi = { message ->
@@ -861,10 +867,12 @@ class SpendingRepository(
 
         val batchId = "batch_${System.currentTimeMillis()}_${auditCounter.incrementAndGet()}"
         val context = buildIngestContext(mode, batchId)
-        // AI assist (when the user has enabled + consented + configured it)
-        // resolves only the messages the local parser found ambiguous. Every
-        // failure degrades to that local result — an AI outage never blocks,
-        // drops, or guesses a transaction.
+        // AI assist (when the user has enabled + consented + configured it) is the
+        // primary interpreter for every potentially-financial message: a validated
+        // extraction overrides the local guess so new formats need no new template.
+        // Every failure degrades to the local result — an AI outage never blocks,
+        // drops, or guesses a transaction, and locally-filtered non-financial
+        // messages are never transmitted.
         val aiResult = aiAugmenter.buildOverrides(messages)
         val plan = SmsIngestPlanner.plan(messages, context, aiResult.overrides)
         val now = context.nowMillis
@@ -904,6 +912,7 @@ class SpendingRepository(
                         .filter { it.isNotBlank() }.joinToString(" "),
                     tx.aiCategorySuggestion
                 ),
+                paymentMethodHint = tx.aiPaymentMethodSuggestion ?: "",
                 accountId = planned.resolvedAccountId,
                 batchId = batchId,
                 createdAtMillis = now,
@@ -1125,9 +1134,12 @@ class SpendingRepository(
     suspend fun clearSmsImportHistory() {
         spendingDao.clearSmsMeta()
         spendingDao.clearAllDetections()
+        // Drop cached AI decisions too: they are SMS-processing metadata and the
+        // user asked to clear it. Recorded transactions are untouched.
+        aiCache.clear()
         logAudit(
             "sms", "history", "cleared",
-            "Cleared SMS import history and review queue; recorded transactions untouched"
+            "Cleared SMS import history, review queue and cached AI decisions; recorded transactions untouched"
         )
     }
 
@@ -1171,10 +1183,13 @@ class SpendingRepository(
             }
 
             LedgerAction.RECORD_INCOME -> {
-                val sourceId = if (detection.txType == SmsTxType.REFUND.name) {
-                    MoneySource.REFUND.id
-                } else {
-                    MoneySource.TRANSFER_IN.id
+                // Refund and cashback are distinct incoming sources — neither is
+                // treated as an expense reduction, and cashback is never relabelled
+                // a refund.
+                val sourceId = when (detection.txType) {
+                    SmsTxType.REFUND.name -> MoneySource.REFUND.id
+                    SmsTxType.CASHBACK.name -> MoneySource.CASHBACK.id
+                    else -> MoneySource.TRANSFER_IN.id
                 }
                 val id = spendingDao.upsertIncome(
                     IncomeEntity(
@@ -1266,6 +1281,8 @@ class SpendingRepository(
         ) {
             SmsTxType.FEE -> "Fee"
             SmsTxType.REFUND -> "Refund"
+            SmsTxType.CASHBACK -> "Cashback"
+            SmsTxType.REVERSAL -> "Reversal"
             SmsTxType.MONEY_RECEIVED -> "Money Received"
             SmsTxType.MONEY_SENT -> "Money Sent"
             SmsTxType.WITHDRAWAL -> "Cash Withdrawal"
@@ -1278,7 +1295,7 @@ class SpendingRepository(
         else "$what · ${detection.provider}"
     }
 
-    /** Known account → its method; otherwise the provider decides. */
+    /** Known account → its method; else the AI hint; else the provider. */
     private suspend fun paymentMethodFor(
         detection: SmsDetectionEntity,
         accountId: String
@@ -1293,6 +1310,11 @@ class SpendingRepository(
                     if (detection.provider.contains("credit", ignoreCase = true)) PaymentMethod.CREDIT_CARD
                     else PaymentMethod.DEBIT_CARD
             }
+        }
+        // No known account: honour the model's payment-method hint (mapped to a
+        // real method, discarded if it does not resolve), then the provider.
+        AiPaymentMethodMapper.toMethodId(detection.paymentMethodHint)?.let {
+            return PaymentMethod.fromId(it)
         }
         val provider = detection.provider
         return when {

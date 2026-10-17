@@ -13,6 +13,7 @@ enum class MoneySource(
     SALARY(id = "salary", label = "Salary / Income"),
     FREELANCE(id = "freelance", label = "Freelance Earnings"),
     GIFT(id = "gift", label = "Gift"),
+    CASHBACK(id = "cashback", label = "Cashback / Reward"),
     REFUND(id = "refund", label = "Refund"),
     TRANSFER_IN(id = "transfer_in", label = "Transfer Received"),
     OTHER(id = "other", label = "Other");

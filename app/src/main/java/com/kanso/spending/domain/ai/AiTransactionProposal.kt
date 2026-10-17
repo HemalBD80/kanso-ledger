@@ -45,6 +45,10 @@ data class AiTransactionProposal(
     val confidence: Double?,
     /** Category suggestion, if the model offers one. Never overrides user categories. */
     val categorySuggestion: String?,
+    /** Payment-method suggestion, if the model offers one. Never overrides a known account. */
+    val paymentMethodSuggestion: String? = null,
+    /** Short quote from the message that supports the extraction (evidence). */
+    val evidence: String? = null,
     /** Anything the model flags as uncertain, conflicting, or incomplete. */
     val warnings: List<String>?
 )

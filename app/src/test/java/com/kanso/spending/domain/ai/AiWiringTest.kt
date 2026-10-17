@@ -95,17 +95,40 @@ class AiWiringTest {
     }
 
     @Test
+    fun mapperResolvesMobileAndInternetToTheBillsBucket() {
+        // "Mobile & Internet" resolves to the ledger's Bills & Utilities bucket.
+        assertEquals("bills", AiCategoryMapper.toCategoryId("Mobile & Internet"))
+        assertEquals("bills", AiCategoryMapper.toCategoryId("mobile recharge"))
+        assertEquals("bills", AiCategoryMapper.toCategoryId("internet bill"))
+    }
+
+    @Test
     fun mapperOnlyEverReturnsARealBundledId() {
-        val inputs = listOf("dining", "random noise", "subscription", " rent ", "xyzzy", "book")
+        val allowed = SpendingCategory.entries.map { it.id }.toSet() + "bills"
+        val inputs = listOf("dining", "random noise", "subscription", " rent ", "xyzzy", "book", "mobile recharge")
         for (input in inputs) {
             val mapped = AiCategoryMapper.toCategoryId(input)
             if (mapped != null) {
-                assertTrue(
-                    "'$input' mapped to '$mapped' which is not a real category",
-                    SpendingCategory.entries.any { it.id == mapped }
-                )
+                assertTrue("'$input' mapped to '$mapped' which is not a real category", mapped in allowed)
             }
         }
+    }
+
+    // ------------------------------------------------- AiPaymentMethodMapper
+
+    @Test
+    fun paymentMethodMapperResolvesRealSuggestionsOnly() {
+        assertEquals("wallet", AiPaymentMethodMapper.toMethodId("bKash wallet"))
+        assertEquals("wallet", AiPaymentMethodMapper.toMethodId("mobile wallet"))
+        assertEquals("debit", AiPaymentMethodMapper.toMethodId("Debit Card"))
+        assertEquals("credit", AiPaymentMethodMapper.toMethodId("credit card"))
+        assertEquals("transfer", AiPaymentMethodMapper.toMethodId("bank transfer"))
+        assertEquals("cash", AiPaymentMethodMapper.toMethodId("cash"))
+        // Unknown / non-method text must resolve to null (caller keeps its default).
+        assertNull(AiPaymentMethodMapper.toMethodId("p2p_transfer"))
+        assertNull(AiPaymentMethodMapper.toMethodId("something else"))
+        assertNull(AiPaymentMethodMapper.toMethodId(""))
+        assertNull(AiPaymentMethodMapper.toMethodId(null))
     }
 
     // ------------------------------------------------- AiInsightsNarrator

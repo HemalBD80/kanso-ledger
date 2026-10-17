@@ -83,6 +83,10 @@ data class SmsDetectionEntity(
     @ColumnInfo(name = "category_id", defaultValue = "")
     val categoryId: String = "",
 
+    /** AI payment-method hint (free-form), used only when the account is unknown. */
+    @ColumnInfo(name = "payment_method_hint", defaultValue = "")
+    val paymentMethodHint: String = "",
+
     /** Account chosen at approval time (empty → resolved from payment method). */
     @ColumnInfo(name = "account_id", defaultValue = "")
     val accountId: String = "",
