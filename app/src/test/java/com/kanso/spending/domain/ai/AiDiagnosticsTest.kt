@@ -23,8 +23,8 @@ import org.junit.Test
 class AiDiagnosticsTest {
 
     private val config = AiConfig(
-        modelId = AiConfig.DEFAULT_MODEL_ID,
-        baseUrl = AiConfig.DEFAULT_BASE_URL,
+        modelId = "test-model-id",
+        baseUrl = "https://integrate.example.test/v1",
         apiKey = "test-key-not-real"
     )
 
@@ -56,7 +56,10 @@ class AiDiagnosticsTest {
             AiTransportResult.RateLimited to AiSmsInterpreter.FailureKind.RATE_LIMITED,
             AiTransportResult.HttpError(500) to AiSmsInterpreter.FailureKind.PROVIDER_HTTP,
             AiTransportResult.NetworkError to AiSmsInterpreter.FailureKind.NETWORK,
-            AiTransportResult.Malformed to AiSmsInterpreter.FailureKind.MALFORMED_REPLY
+            AiTransportResult.Malformed() to AiSmsInterpreter.FailureKind.MALFORMED_REPLY,
+            AiTransportResult.Malformed("unknown shape") to AiSmsInterpreter.FailureKind.MALFORMED_REPLY,
+            AiTransportResult.EmptyReply("empty") to AiSmsInterpreter.FailureKind.EMPTY_REPLY,
+            AiTransportResult.ProviderError("model not found") to AiSmsInterpreter.FailureKind.INVALID_MODEL
         )
         for ((transport, expected) in cases) {
             val out = AiSmsInterpreter(FakeTransport(transport))
@@ -67,14 +70,33 @@ class AiDiagnosticsTest {
     }
 
     @Test
-    fun anHttp400Or404CallsOutAPossiblyInvalidModelId() {
+    fun httpStatusIsMappedToTheActionableCategory() {
+        // A 404 with no model hint is a wrong endpoint/format, not a model problem.
+        val endpoint = AiSmsInterpreter(FakeTransport(AiTransportResult.HttpError(404)))
+            .interpret(config, "bKash", "You have sent BDT 100.00 TrxID AA11", 0L)
+        assertEquals(
+            AiSmsInterpreter.FailureKind.UNSUPPORTED_ENDPOINT,
+            (endpoint as AiSmsInterpreter.Outcome.Failed).kind
+        )
+        assertTrue(endpoint.reason.contains("API format"))
+
+        // A 404/400/422 that names the model is an invalid-model problem.
         for (code in listOf(400, 404, 422)) {
-            val out = AiSmsInterpreter(FakeTransport(AiTransportResult.HttpError(code)))
-                .interpret(config, "bKash", "You have sent BDT 100.00 TrxID AA11", 0L)
-            val failed = out as AiSmsInterpreter.Outcome.Failed
-            assertEquals(AiSmsInterpreter.FailureKind.PROVIDER_HTTP, failed.kind)
+            val invalid = AiSmsInterpreter(
+                FakeTransport(AiTransportResult.HttpError(code, "model 'foo' does not exist"))
+            ).interpret(config, "bKash", "You have sent BDT 100.00 TrxID AA11", 0L)
+            val failed = invalid as AiSmsInterpreter.Outcome.Failed
+            assertEquals(AiSmsInterpreter.FailureKind.INVALID_MODEL, failed.kind)
             assertTrue("HTTP $code must hint at the model ID", failed.reason.contains("model ID"))
         }
+
+        // A 400 that does not name the model is a generic provider error.
+        val generic = AiSmsInterpreter(FakeTransport(AiTransportResult.HttpError(400, "bad request")))
+            .interpret(config, "bKash", "You have sent BDT 100.00 TrxID AA11", 0L)
+        assertEquals(
+            AiSmsInterpreter.FailureKind.PROVIDER_HTTP,
+            (generic as AiSmsInterpreter.Outcome.Failed).kind
+        )
     }
 
     @Test

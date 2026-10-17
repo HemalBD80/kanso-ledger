@@ -2,6 +2,7 @@ package com.kanso.spending.data.ai
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.kanso.spending.domain.ai.AiApiFormat
 import com.kanso.spending.domain.ai.AiConfig
 
 /**
@@ -26,15 +27,20 @@ class AiSettingsStore(context: Context) {
     fun read(): AiConfig = AiConfig(
         modelId = prefs.getString(KEY_MODEL, AiConfig.DEFAULT_MODEL_ID) ?: AiConfig.DEFAULT_MODEL_ID,
         baseUrl = prefs.getString(KEY_BASE_URL, AiConfig.DEFAULT_BASE_URL) ?: AiConfig.DEFAULT_BASE_URL,
-        apiKey = prefs.getString(KEY_API, null)
+        apiKey = prefs.getString(KEY_API, null),
+        apiFormat = AiApiFormat.fromId(prefs.getString(KEY_FORMAT, null))
     )
 
-    /** Persist all three values at once. A blank key clears the credential. */
-    fun write(modelId: String, baseUrl: String, apiKey: String?) {
+    /**
+     * Persist the model, base URL, key and API format. A blank key clears the
+     * credential; blank model/base are stored blank (never defaulted to a vendor).
+     */
+    fun write(modelId: String, baseUrl: String, apiKey: String?, apiFormat: AiApiFormat) {
         prefs.edit()
-            .putString(KEY_MODEL, modelId.ifBlank { AiConfig.DEFAULT_MODEL_ID })
-            .putString(KEY_BASE_URL, baseUrl.ifBlank { AiConfig.DEFAULT_BASE_URL })
+            .putString(KEY_MODEL, modelId.trim())
+            .putString(KEY_BASE_URL, baseUrl.trim())
             .putString(KEY_API, apiKey?.trim()?.takeIf { it.isNotEmpty() })
+            .putString(KEY_FORMAT, apiFormat.id)
             .apply()
     }
 
@@ -72,5 +78,6 @@ class AiSettingsStore(context: Context) {
         private const val KEY_API = "ai_api_key"
         private const val KEY_CONSENT = "ai_external_consent"
         private const val KEY_ENABLED = "ai_enabled"
+        private const val KEY_FORMAT = "ai_api_format"
     }
 }

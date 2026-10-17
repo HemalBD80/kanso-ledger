@@ -1,6 +1,7 @@
 package com.kanso.spending.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,6 +14,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -31,13 +33,15 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.kanso.spending.data.ai.AiSettingsStore
-import com.kanso.spending.domain.ai.AiConfig
+import com.kanso.spending.domain.ai.AiApiFormat
 import com.kanso.spending.ui.theme.LocalKansoColors
 
 /**
- * Settings for the optional GLM 5.3 Flash AI-assisted SMS parsing.
+ * Settings for the optional, provider-independent AI-assisted SMS parsing.
  *
- * SMS access and external AI processing are explained as two SEPARATE choices:
+ * The user brings their own provider: base URL, API key, model id and API
+ * format. Nothing here names or defaults to a vendor. SMS access and external
+ * AI processing are explained as two SEPARATE choices:
  * enabling AI here never grants SMS permission, and granting SMS permission
  * never sends anything anywhere. Three gates must all be open before a single
  * byte leaves the device — feature on, explicit consent, and a credential the
@@ -68,12 +72,15 @@ fun AiConfigSection(
     var modelId by remember { mutableStateOf(initial.modelId) }
     var baseUrl by remember { mutableStateOf(initial.baseUrl) }
     var apiKey by remember { mutableStateOf(initial.apiKey.orEmpty()) }
+    var apiFormat by remember { mutableStateOf(initial.apiFormat) }
     var saved by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
 
     val keyPresent = apiKey.isNotBlank()
     val gatesOpen = enabled && consent && keyPresent
+    // Never claim a fixed vendor: show exactly what the user configured.
+    val modelLabel = modelId.ifBlank { "your configured model" }
 
     Text("AI-ASSISTED PARSING (OPTIONAL, OFF BY DEFAULT)", style = MaterialTheme.typography.labelSmall, color = colors.inkSecondary)
     Spacer(Modifier.height(6.dp))
@@ -95,7 +102,7 @@ fun AiConfigSection(
             )
             Text(
                 "2. External AI processing — send redacted text of messages the LOCAL parser could not " +
-                    "understand to GLM 5.3 Flash. This leaves your phone. It is a separate, optional " +
+                    "understand to $modelLabel. This leaves your phone. It is a separate, optional " +
                     "choice and is OFF until you turn it on below.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.inkSecondary
@@ -137,14 +144,16 @@ fun AiConfigSection(
             }
         }
 
-        AiField("Model ID", modelId, AiConfig.DEFAULT_MODEL_ID) { modelId = it; saved = false }
-        AiField("API base URL", baseUrl, AiConfig.DEFAULT_BASE_URL) { baseUrl = it; saved = false }
+        AiField("Model ID", modelId, "the model id your provider documents") { modelId = it; saved = false }
+        AiField("API base URL", baseUrl, "https://your-provider.example/v1") { baseUrl = it; saved = false }
         AiField(
             "API key (stored on this device only)",
             apiKey,
             "Paste your key — never built into the APK",
             isPassword = true
         ) { apiKey = it; saved = false }
+
+        ApiFormatSelector(selected = apiFormat, onSelect = { apiFormat = it; saved = false })
 
         if (!keyPresent) {
             Text(
@@ -157,7 +166,7 @@ fun AiConfigSection(
 
         Button(
             onClick = {
-                store.write(modelId = modelId, baseUrl = baseUrl, apiKey = apiKey.ifBlank { null })
+                store.write(modelId = modelId, baseUrl = baseUrl, apiKey = apiKey.ifBlank { null }, apiFormat = apiFormat)
                 store.aiEnabled = enabled
                 store.aiConsentGranted = consent
                 saved = true
@@ -174,7 +183,7 @@ fun AiConfigSection(
                 onClick = {
                     // Persist what's on screen so the probe uses exactly these
                     // settings, then run ONE real request. No SMS, no ledger data.
-                    store.write(modelId = modelId, baseUrl = baseUrl, apiKey = apiKey.ifBlank { null })
+                    store.write(modelId = modelId, baseUrl = baseUrl, apiKey = apiKey.ifBlank { null }, apiFormat = apiFormat)
                     testing = true
                     testResult = null
                     onTestConnection { description ->
@@ -211,7 +220,7 @@ fun AiConfigSection(
             Spacer(Modifier.height(8.dp))
             Button(
                 onClick = {
-                    store.write(modelId = modelId, baseUrl = baseUrl, apiKey = apiKey.ifBlank { null })
+                    store.write(modelId = modelId, baseUrl = baseUrl, apiKey = apiKey.ifBlank { null }, apiFormat = apiFormat)
                     testing = true
                     testResult = null
                     onTestClassification { description ->
@@ -233,7 +242,7 @@ fun AiConfigSection(
         Spacer(Modifier.height(8.dp))
         Text(
             if (gatesOpen)
-                "Active: ambiguous messages will be sent to GLM 5.3 Flash for help."
+                "Active: ambiguous messages will be sent to $modelLabel for help."
             else
                 "Not active: every message is parsed locally. You can turn this off at any time.",
             style = MaterialTheme.typography.bodySmall,
@@ -312,4 +321,48 @@ private fun AiField(
             unfocusedIndicatorColor = colors.hairlineBorder
         )
     )
+}
+
+/**
+ * The API wire-format picker. Each provider documents its own request/response
+ * shape; this lets the user match theirs instead of the app assuming one. The
+ * default is OpenAI-compatible, which most providers and gateways accept.
+ */
+@Composable
+private fun ApiFormatSelector(selected: AiApiFormat, onSelect: (AiApiFormat) -> Unit) {
+    val colors = LocalKansoColors.current
+    Text("API format", style = MaterialTheme.typography.labelMedium, color = colors.inkSecondary)
+    Spacer(Modifier.height(4.dp))
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = colors.background,
+        border = androidx.compose.foundation.BorderStroke(1.dp, colors.hairlineBorder)
+    ) {
+        Column(Modifier.padding(vertical = 4.dp)) {
+            AiApiFormat.ALL.forEach { format ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(format) }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(selected = format == selected, onClick = { onSelect(format) })
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            format.label,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = colors.inkPrimary
+                        )
+                        Text(
+                            format.hint,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.inkSecondary
+                        )
+                    }
+                }
+            }
+        }
+    }
 }

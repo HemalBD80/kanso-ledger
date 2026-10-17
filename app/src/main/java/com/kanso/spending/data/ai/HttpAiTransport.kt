@@ -1,69 +1,56 @@
 package com.kanso.spending.data.ai
 
+import com.kanso.spending.domain.ai.AiApiFormat
 import com.kanso.spending.domain.ai.AiConfig
+import com.kanso.spending.domain.ai.AiHttpRequest
+import com.kanso.spending.domain.ai.AiReplyExtractor
 import com.kanso.spending.domain.ai.AiTransport
 import com.kanso.spending.domain.ai.AiTransportResult
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * The one real network call in the app: an OpenAI-compatible chat completion.
+ * The one real network call in the app: one chat-completion-style request built
+ * for the API format the user selected ([AiApiFormat]).
  *
- * Uses [HttpURLConnection] (built into Android) rather than adding a dependency,
- * and is deliberately conservative so a misbehaving provider can never crash the
- * ledger or spin forever:
+ * Uses [HttpURLConnection] (built into Android) rather than adding any provider
+ * SDK or dependency, and is deliberately conservative so a misbehaving provider
+ * can never crash the ledger or spin forever:
  *  - connect/read timeouts bound every request;
- *  - 429 and 5xx get a small bounded retry with backoff; other 4xx do not;
+ *  - 429 and transient 5xx get a small bounded retry with backoff; other 4xx do not;
  *  - the response body is read up to a hard size cap and truncated beyond it;
+ *  - the reply is read with the provider-tolerant [AiReplyExtractor], so a
+ *    non-OpenAI envelope is understood rather than reported as malformed;
  *  - every failure maps to a typed [AiTransportResult] — this never throws.
  *
- * The credential is sent only in the Authorization header, never in the body,
- * never logged, and never returned to the caller.
+ * The credential is sent only in the format's auth header, never in the body,
+ * never logged, and never returned to the caller (provider error hints are
+ * sanitised to strip the key).
  */
 class HttpAiTransport : AiTransport {
 
     private companion object {
         const val CONNECT_TIMEOUT_MS = 10_000
-        const val READ_TIMEOUT_MS = 20_000
+        const val READ_TIMEOUT_MS = 30_000
         const val MAX_RETRIES = 2
         const val BACKOFF_BASE_MS = 700L
         const val MAX_REPLY_BYTES = 256 * 1024
-
-        /**
-         * Room for a reasoning model's hidden reasoning trace PLUS the final
-         * JSON. Verified live: 512 is too small (content came back null).
-         */
-        const val MAX_TOKENS = 4096
+        const val MAX_HINT_CHARS = 200
     }
 
     override fun sendChat(config: AiConfig, systemPrompt: String, userMessage: String): AiTransportResult {
         if (!config.isConfigured) return AiTransportResult.NotConfigured
 
-        val body = JSONObject()
-            .put("model", config.modelId)
-            .put("temperature", 0.0)
-            // GLM 5.3 Flash is a REASONING model: it spends completion tokens on
-            // a hidden reasoning trace before emitting `content`. At max_tokens=512
-            // (verified live) it exhausted the budget on reasoning and returned
-            // content=null with finish_reason="length". 4096 leaves room for both
-            // the reasoning trace and the final JSON answer.
-            .put("max_tokens", MAX_TOKENS)
-            .put(
-                "messages",
-                JSONArray()
-                    .put(JSONObject().put("role", "system").put("content", systemPrompt))
-                    .put(JSONObject().put("role", "user").put("content", userMessage))
-            )
-            .toString()
-            .toByteArray(Charsets.UTF_8)
+        val request = config.apiFormat.buildRequest(config, systemPrompt, userMessage)
+        if (request.url.isBlank()) return AiTransportResult.NotConfigured
+        val body = request.body.toByteArray(Charsets.UTF_8)
 
         var attempt = 0
         var lastResult: AiTransportResult = AiTransportResult.NetworkError
         while (attempt <= MAX_RETRIES) {
-            val result = attemptOnce(config, body)
+            val result = attemptOnce(request, body, config.apiKey.orEmpty())
             when (result) {
                 // Transient classes worth one more try, with backoff.
                 AiTransportResult.RateLimited,
@@ -85,93 +72,129 @@ class HttpAiTransport : AiTransport {
             }
             attempt++
         }
-        // A 401 that survived every retry is treated as a genuine credential
-        // rejection; a single transient hiccup never reaches here.
-        return if (lastResult is AiTransportResult.HttpError && lastResult.code == 401) {
-            AiTransportResult.Unauthorized
-        } else {
-            lastResult
-        }
+        return lastResult
     }
 
-    private fun attemptOnce(config: AiConfig, body: ByteArray): AiTransportResult {
+    private fun attemptOnce(
+        request: AiHttpRequest,
+        body: ByteArray,
+        apiKey: String
+    ): AiTransportResult {
         var connection: HttpURLConnection? = null
         return try {
-            connection = (URL(config.chatCompletionsUrl).openConnection() as HttpURLConnection).apply {
+            connection = (URL(request.url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 connectTimeout = CONNECT_TIMEOUT_MS
                 readTimeout = READ_TIMEOUT_MS
                 doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("Accept", "application/json")
-                // The credential lives here and nowhere else.
-                setRequestProperty("Authorization", "Bearer ${config.apiKey}")
+                for ((name, value) in request.headers) setRequestProperty(name, value)
             }
             connection.outputStream.use { it.write(body) }
 
-            when (val code = connection.responseCode) {
-                in 200..299 -> readSuccess(connection)
-                // 403 is a genuine auth failure (verified: a bogus key returns
-                // 403 "Authorization failed"). 401 was observed as a TRANSIENT
-                // gateway hiccup that succeeds on immediate retry, so it is
-                // treated as retryable and only surfaced as Unauthorized if it
-                // persists through every retry.
-                403 -> AiTransportResult.Unauthorized
-                401 -> AiTransportResult.HttpError(401)
-                429 -> AiTransportResult.RateLimited
-                in RETRYABLE -> AiTransportResult.HttpError(code)
-                else -> AiTransportResult.HttpError(code)
-            }
+            val code = connection.responseCode
+            if (code in 200..299) readSuccess(connection) else readFailure(code, connection, apiKey)
         } catch (timeout: java.net.SocketTimeoutException) {
             AiTransportResult.NetworkError
         } catch (io: IOException) {
             AiTransportResult.NetworkError
         } catch (ignored: Exception) {
             // A malformed/unexpected payload must degrade, never crash the app.
-            AiTransportResult.Malformed
+            AiTransportResult.Malformed("the request could not be completed")
         } finally {
             connection?.disconnect()
         }
     }
 
-    private fun readSuccess(connection: HttpURLConnection): AiTransportResult {
-        val stream = try {
-            connection.inputStream
-        } catch (e: IOException) {
-            return AiTransportResult.Malformed
+    /**
+     * Map a non-2xx status to a precise category. The provider's error body (if
+     * any) gives a short, sanitised hint so a bad model id, a wrong endpoint and
+     * a genuine auth failure are distinguishable.
+     */
+    private fun readFailure(code: Int, connection: HttpURLConnection, apiKey: String): AiTransportResult =
+        when (code) {
+            401, 403 -> AiTransportResult.Unauthorized
+            429 -> AiTransportResult.RateLimited
+            else -> AiTransportResult.HttpError(code, readErrorHint(connection, apiKey))
         }
-        val text = stream.use { s ->
-            val buffer = ByteArray(8 * 1024)
-            val out = StringBuilder()
-            var read: Int
-            var total = 0
-            while (s.read(buffer).also { read = it } != -1) {
-                total += read
-                // Hard size cap: stop collecting once the cap is passed.
-                if (total > MAX_REPLY_BYTES) break
-                out.append(String(buffer, 0, read, Charsets.UTF_8))
-            }
-            out.toString()
-        }
-        val choice = runCatching {
-            JSONObject(text).optJSONArray("choices")?.optJSONObject(0)
-        }.getOrNull()
-        val content = choice?.optJSONObject("message")?.optString("content")
-        val finishReason = choice?.optString("finish_reason")
 
-        // finish_reason "length" means the model hit the token cap — the reply
-        // is truncated and the JSON (if any) is incomplete, so it is unreliable
-        // and must never be trusted. A null content (reasoning model spent its
-        // budget on the hidden reasoning trace) is likewise unusable.
-        if (finishReason == "length") {
-            return AiTransportResult.Malformed
+    private fun readSuccess(connection: HttpURLConnection): AiTransportResult {
+        val text = try {
+            readBody(connection.inputStream)
+        } catch (io: IOException) {
+            return AiTransportResult.Malformed("the response body could not be read")
         }
-        return if (content.isNullOrBlank()) {
-            AiTransportResult.Malformed
-        } else {
-            AiTransportResult.Success(text)
+        if (text.isBlank()) return AiTransportResult.EmptyReply("the provider returned an empty body")
+
+        // Some gateways report an error inside a 200 body.
+        AiReplyExtractor.providerError(text)?.let {
+            return AiTransportResult.ProviderError(sanitise(it, null))
+        }
+
+        return when (val extraction = AiReplyExtractor.extract(text)) {
+            is AiReplyExtractor.Extraction.Text -> {
+                val content = extraction.text.trim()
+                if (content.isEmpty()) {
+                    AiTransportResult.EmptyReply(
+                        if (extraction.finishReason == "length") {
+                            "the model hit its token limit before answering"
+                        } else {
+                            "the provider returned an empty completion"
+                        }
+                    )
+                } else {
+                    AiTransportResult.Success(content)
+                }
+            }
+            AiReplyExtractor.Extraction.Empty ->
+                AiTransportResult.EmptyReply("the provider returned an empty completion")
+            AiReplyExtractor.Extraction.Unrecognised ->
+                AiTransportResult.Malformed(
+                    "the response did not contain a recognised message field — check the API format"
+                )
+            // Plain text is still a usable reply (a connectivity probe succeeds);
+            // the schema parser decides whether it is a valid classification.
+            AiReplyExtractor.Extraction.NotJson -> AiTransportResult.Success(text.trim())
         }
     }
 
-    private val RETRYABLE = setOf(401, 500, 502, 503, 504)
+    /** Read a short, sanitised error hint from a failed response body. */
+    private fun readErrorHint(connection: HttpURLConnection, apiKey: String): String? {
+        val stream: InputStream = try {
+            connection.errorStream ?: return null
+        } catch (ignored: Exception) {
+            return null
+        }
+        val text = try {
+            readBody(stream)
+        } catch (io: IOException) {
+            return null
+        }
+        val hint = AiReplyExtractor.providerError(text)
+            ?: text.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
+        return hint?.let { sanitise(it, apiKey) }
+    }
+
+    /** Bounded read: never buffers more than [MAX_REPLY_BYTES]. */
+    private fun readBody(stream: InputStream): String = stream.use { input ->
+        val buffer = ByteArray(8 * 1024)
+        val out = StringBuilder()
+        var total = 0
+        while (true) {
+            val read = input.read(buffer)
+            if (read == -1) break
+            total += read
+            if (total > MAX_REPLY_BYTES) break
+            out.append(String(buffer, 0, read, Charsets.UTF_8))
+        }
+        out.toString()
+    }
+
+    /** Collapse whitespace, strip the credential, and cap the length. */
+    private fun sanitise(message: String, apiKey: String?): String {
+        var clean = message.replace(Regex("\\s+"), " ").trim()
+        if (!apiKey.isNullOrBlank()) clean = clean.replace(apiKey, "***")
+        return if (clean.length > MAX_HINT_CHARS) clean.take(MAX_HINT_CHARS) + "…" else clean
+    }
+
+    private val RETRYABLE = setOf(408, 409, 500, 502, 503, 504)
 }

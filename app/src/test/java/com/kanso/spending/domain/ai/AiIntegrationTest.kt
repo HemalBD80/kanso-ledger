@@ -10,7 +10,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * GLM 5.3 Flash integration, tested entirely against mocks — no real
+ * Provider-independent AI integration, tested entirely against mocks — no real
  * credentials, no network, no paid requests.
  *
  * The suite pins the properties the ledger depends on:
@@ -26,8 +26,8 @@ import org.junit.Test
 class AiIntegrationTest {
 
     private val config = AiConfig(
-        modelId = AiConfig.DEFAULT_MODEL_ID,
-        baseUrl = AiConfig.DEFAULT_BASE_URL,
+        modelId = "test-model-id",
+        baseUrl = "https://integrate.example.test/v1",
         apiKey = "test-key-not-real"
     )
 
@@ -77,7 +77,7 @@ class AiIntegrationTest {
         val escaped = body.replace("\\", "\\\\").replace("\"", "\\\"")
             .replace("\n", "\\n").replace("\t", "\\t")
         return AiTransportResult.Success(
-            """{"id":"x","object":"chat.completion","model":"z-ai/glm-5.3-flash","choices":[{"index":0,"message":{"role":"assistant","content":"$escaped"},"finish_reason":"stop"}]}"""
+            """{"id":"x","object":"chat.completion","model":"test-model-id","choices":[{"index":0,"message":{"role":"assistant","content":"$escaped"},"finish_reason":"stop"}]}"""
         )
     }
 
@@ -93,23 +93,60 @@ class AiIntegrationTest {
 
     @Test
     fun endpointsAreDerivedFromBaseUrlNeverHardcoded() {
-        assertEquals("https://integrate.api.nvidia.com/v1/chat/completions", config.chatCompletionsUrl)
+        assertEquals("https://integrate.example.test/v1/chat/completions", config.chatCompletionsUrl)
         // Trailing slash is normalised so a mis-typed base URL still works.
         assertEquals(
-            "https://integrate.api.nvidia.com/v1/chat/completions",
-            config.copy(baseUrl = "https://integrate.api.nvidia.com/v1/").chatCompletionsUrl
+            "https://integrate.example.test/v1/chat/completions",
+            config.copy(baseUrl = "https://integrate.example.test/v1/").chatCompletionsUrl
         )
         // Swapping provider = supplying a different base URL; nothing else changes.
         assertEquals(
             "https://example.test/v2/chat/completions",
             config.copy(baseUrl = "https://example.test/v2").chatCompletionsUrl
         )
+        // A full endpoint pasted by the user is respected verbatim (no double path).
+        assertEquals(
+            "https://example.test/v2/chat/completions",
+            config.copy(baseUrl = "https://example.test/v2/chat/completions").chatCompletionsUrl
+        )
     }
 
     @Test
-    fun developerSuppliedModelAndBaseUrlAreTheDefaults() {
-        assertEquals("z-ai/glm-5.3-flash", AiConfig.DEFAULT_MODEL_ID)
-        assertEquals("https://integrate.api.nvidia.com/v1", AiConfig.DEFAULT_BASE_URL)
+    fun noVendorModelOrEndpointIsBakedIn() {
+        // The defaults are blank on purpose: the user must supply their own
+        // provider, model and endpoint, so nothing is sent to a service they did
+        // not choose.
+        assertEquals("", AiConfig.DEFAULT_MODEL_ID)
+        assertEquals("", AiConfig.DEFAULT_BASE_URL)
+        assertEquals(AiApiFormat.OPENAI_CHAT, AiApiFormat.DEFAULT)
+    }
+
+    @Test
+    fun requestUrlFollowsTheSelectedApiFormat() {
+        val key = "test-key-not-real"
+        fun url(format: AiApiFormat, base: String, model: String = "my-model") =
+            AiConfig(modelId = model, baseUrl = base, apiKey = key, apiFormat = format).requestUrl
+
+        assertEquals(
+            "https://host.test/v1/chat/completions",
+            url(AiApiFormat.OPENAI_CHAT, "https://host.test/v1")
+        )
+        assertEquals(
+            "https://host.test/v1/responses",
+            url(AiApiFormat.OPENAI_RESPONSES, "https://host.test/v1")
+        )
+        assertEquals(
+            "https://api.anthropic.com/v1/messages",
+            url(AiApiFormat.ANTHROPIC_MESSAGES, "https://api.anthropic.com/v1")
+        )
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-x:generateContent",
+            url(AiApiFormat.GOOGLE_GEMINI, "https://generativelanguage.googleapis.com/v1beta", "gemini-x")
+        )
+        assertEquals(
+            "http://127.0.0.1:11434/api/chat",
+            url(AiApiFormat.OLLAMA_CHAT, "http://127.0.0.1:11434")
+        )
     }
 
     @Test
@@ -237,8 +274,8 @@ class AiIntegrationTest {
 
     @Test
     fun missingProviderFallsBackToSenderInsteadOfRejecting() {
-        // GLM 5.3 Flash returns provider: null even for financial messages (it
-        // honours "never guess"). A null/blank provider must NOT reject a
+        // A well-behaved model returns provider: null even for financial messages
+        // (it honours "never guess"). A null/blank provider must NOT reject a
         // correct extraction — the sender is a reliable fallback.
         val r = AiResponseValidator.validate(proposal(provider = "  "), "bKash", 0L)
         assertTrue(r is AiValidationResult.Accepted)
@@ -248,7 +285,7 @@ class AiIntegrationTest {
         assertEquals("HBL Bank", (r2 as AiValidationResult.Accepted).transaction.provider)
     }
 
-    // --------------------------------------- real GLM 5.3 Flash behaviour (live)
+    // ------------------------------------ real observed model behaviour (live)
     //
     // The following pin the ACTUAL output observed against the live endpoint,
     // which differs from the idealised fixtures above. They exist because the
@@ -308,7 +345,7 @@ class AiIntegrationTest {
 
     @Test
     fun realConfidentResponseParsesAndValidatesEndToEnd() {
-        // EXACT content captured live from GLM 5.3 Flash for a bKash send.
+        // EXACT content captured live from one provider for a bKash send.
         val realContent = """{"isFinancial": true, "provider": null, "type": "send_money", "amount": "1,250.00", "currency": "BDT", "timestamp": "15/10/26 14:22", "reference": "bK6P9Q2R", "fee": "5.00", "merchant": null, "accountHint": null, "reportedBalance": "4,320.50", "direction": "debit", "confidence": 0.9, "categorySuggestion": "transfer", "warnings": ["Provider not explicitly named in message"]}"""
         val envelope = jsonReply(realContent)
         val parsed = AiResponseParser.parse((envelope as AiTransportResult.Success).replyText)
@@ -488,7 +525,9 @@ class AiIntegrationTest {
             AiTransportResult.RateLimited,
             AiTransportResult.HttpError(500),
             AiTransportResult.NetworkError,
-            AiTransportResult.Malformed
+            AiTransportResult.Malformed(),
+            AiTransportResult.EmptyReply("empty"),
+            AiTransportResult.ProviderError("model not found")
         )
         for (f in failures) {
             val out = AiSmsInterpreter(RecordingTransport(f)).interpret(config, "bKash", "body", 0L)

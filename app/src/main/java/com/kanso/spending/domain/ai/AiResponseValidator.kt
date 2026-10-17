@@ -49,8 +49,8 @@ object AiResponseValidator {
     private const val UNKNOWN_PROVIDER = "unknown"
 
     /**
-     * Directions GLM 5.3 Flash actually emits. Observed: "debit" and "in" (it
-     * says "in", not "credit"). Anything outside this set queues for review.
+     * Directions a model may emit. Observed in practice: "debit" and "in" (models
+     * often say "in", not "credit"). Anything outside this set queues for review.
      */
     private val KNOWN_DIRECTIONS = setOf("credit", "debit", "in", "out")
 
@@ -69,9 +69,10 @@ object AiResponseValidator {
             return AiValidationResult.NotFinancial("Model typed the message non-financial.")
         }
 
-        // GLM 5.3 Flash returns provider: null even for clearly financial messages
-        // (it honors "never guess"). The sender is a reliable, already-known
-        // fallback, so a null provider must NOT reject a correct extraction.
+        // A well-behaved model returns provider: null even for clearly financial
+        // messages (it honors "never guess"). The sender is a reliable,
+        // already-known fallback, so a null provider must NOT reject a correct
+        // extraction.
         val provider = proposal.provider?.trim()?.takeIf { it.isNotEmpty() }
             ?: sender.trim().takeIf { it.isNotEmpty() }
             ?: UNKNOWN_PROVIDER
@@ -143,9 +144,9 @@ object AiResponseValidator {
     }
 
     /**
-     * GLM 5.3 Flash reports confidence on a 0..1 scale (observed 0.9 / 0.95 /
-     * 0.97). Other providers may use 0..100. Values in (0,1] are treated as
-     * fractions and scaled to percent; anything above 1 is already percent.
+     * Models vary: some report confidence on a 0..1 scale (observed 0.9 / 0.95 /
+     * 0.97), others on 0..100. Values in (0,1] are treated as fractions and
+     * scaled to percent; anything above 1 is already percent.
      */
     fun normalizeConfidence(raw: Double?): Int {
         val v = raw ?: return 0
@@ -235,7 +236,7 @@ object AiResponseValidator {
     /**
      * Lenient string→enum mapping; anything unrecognised becomes UNKNOWN.
      *
-     * Normalisation is deliberately generous because GLM 5.3 Flash emits types
+     * Normalisation is deliberately generous because models emit types
      * inconsistently — observed live: "send_money", "received", "debit_card_
      * purchase", "ATM withdrawal" (with a space), "fee", "refund",
      * "balance_inquiry". The v2.4 vocabulary adds expense, income, cashback,

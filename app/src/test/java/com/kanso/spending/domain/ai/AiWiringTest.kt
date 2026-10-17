@@ -28,7 +28,7 @@ class AiWiringTest {
         }
     }
 
-    private fun config() = AiConfig(modelId = "z-ai/glm-5.3-flash", baseUrl = "https://integrate.api.nvidia.com/v1", apiKey = "nvapi-test")
+    private fun config() = AiConfig(modelId = "my-configured-model", baseUrl = "https://integrate.example.test/v1", apiKey = "test-key-not-real")
 
     // ------------------------------------------------- AiConnectionProbe
 
@@ -43,8 +43,8 @@ class AiWiringTest {
         val result = AiConnectionProbe.probe(FakeTransport(AiTransportResult.Success("OK")), config())
         assertTrue(result is AiConnectionProbe.Result.Success)
         val described = AiConnectionProbe.describe(result)
-        assertTrue(described.contains("z-ai/glm-5.3-flash"))
-        assertTrue("description must not leak the key", !described.contains("nvapi-test"))
+        assertTrue(described.contains("my-configured-model"))
+        assertTrue("description must not leak the key", !described.contains("test-key-not-real"))
     }
 
     @Test
@@ -53,7 +53,8 @@ class AiWiringTest {
         assertEquals(AiConnectionProbe.Result.Unauthorized, AiConnectionProbe.probe(FakeTransport(AiTransportResult.Unauthorized), cfg))
         assertEquals(AiConnectionProbe.Result.RateLimited, AiConnectionProbe.probe(FakeTransport(AiTransportResult.RateLimited), cfg))
         assertEquals(AiConnectionProbe.Result.NetworkError, AiConnectionProbe.probe(FakeTransport(AiTransportResult.NetworkError), cfg))
-        assertEquals(AiConnectionProbe.Result.Malformed, AiConnectionProbe.probe(FakeTransport(AiTransportResult.Malformed), cfg))
+        assertEquals(AiConnectionProbe.Result.Malformed(), AiConnectionProbe.probe(FakeTransport(AiTransportResult.Malformed()), cfg))
+        assertEquals(AiConnectionProbe.Result.EmptyReply("empty"), AiConnectionProbe.probe(FakeTransport(AiTransportResult.EmptyReply("empty")), cfg))
         assertEquals(AiConnectionProbe.Result.HttpError(500), AiConnectionProbe.probe(FakeTransport(AiTransportResult.HttpError(500)), cfg))
     }
 
@@ -145,7 +146,8 @@ class AiWiringTest {
         val cfg = config()
         for (failure in listOf<AiTransportResult>(
             AiTransportResult.Unauthorized, AiTransportResult.RateLimited,
-            AiTransportResult.NetworkError, AiTransportResult.Malformed, AiTransportResult.HttpError(500)
+            AiTransportResult.NetworkError, AiTransportResult.Malformed(), AiTransportResult.HttpError(500),
+            AiTransportResult.EmptyReply("empty"), AiTransportResult.ProviderError("boom")
         )) {
             assertNull(AiInsightsNarrator.narrate(FakeTransport(failure), cfg, 100L, 200L, emptyList()))
         }

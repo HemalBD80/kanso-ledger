@@ -1,7 +1,7 @@
 package com.kanso.spending.domain.ai
 
 /**
- * The strict structure GLM 5.3 Flash must return for one financial message.
+ * The strict structure the configured model must return for one financial message.
  *
  * This is a *proposal* from the model — never trusted on its own. Every field is
  * validated locally by [AiResponseValidator] before it can reach the ledger, and
@@ -38,7 +38,7 @@ data class AiTransactionProposal(
     /** "credit"|"debit"|"in"|"out" | null, when the provider states direction explicitly. */
     val direction: String?,
     /**
-     * Model's own confidence. NOTE: GLM 5.3 Flash returns this on a **0..1**
+     * Model's own confidence. NOTE: many models return this on a **0..1**
      * scale (e.g. 0.95), not 0..100. Kept as a Double so the validator can
      * normalise either scale; treated as a hint, never a fact.
      */

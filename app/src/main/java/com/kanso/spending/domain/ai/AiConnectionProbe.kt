@@ -32,14 +32,23 @@ object AiConnectionProbe {
         /** The provider throttled the probe (429). */
         data object RateLimited : Result()
 
-        /** Any other non-2xx HTTP status; the code is carried for display. */
-        data class HttpError(val code: Int) : Result()
+        /**
+         * Any other non-2xx HTTP status. [providerHint] is a short, sanitised
+         * message from the provider (no key, no message text).
+         */
+        data class HttpError(val code: Int, val providerHint: String? = null) : Result()
 
         /** Timeout, DNS or connection failure — could not reach the endpoint. */
         data object NetworkError : Result()
 
-        /** A 2xx reply whose body was not a usable completion. */
-        data object Malformed : Result()
+        /** A 2xx reply whose message field was empty. */
+        data class EmptyReply(val reason: String? = null) : Result()
+
+        /** A reply that arrived but was not a usable completion. */
+        data class Malformed(val reason: String? = null) : Result()
+
+        /** The provider reported an error inside the body. */
+        data class ProviderError(val message: String?) : Result()
     }
 
     /**
@@ -72,9 +81,11 @@ object AiConnectionProbe {
             AiTransportResult.NotConfigured -> Result.NotConfigured
             AiTransportResult.Unauthorized -> Result.Unauthorized
             AiTransportResult.RateLimited -> Result.RateLimited
-            is AiTransportResult.HttpError -> Result.HttpError(outcome.code)
+            is AiTransportResult.HttpError -> Result.HttpError(outcome.code, outcome.providerMessage)
             AiTransportResult.NetworkError -> Result.NetworkError
-            AiTransportResult.Malformed -> Result.Malformed
+            is AiTransportResult.EmptyReply -> Result.EmptyReply(outcome.reason)
+            is AiTransportResult.Malformed -> Result.Malformed(outcome.reason)
+            is AiTransportResult.ProviderError -> Result.ProviderError(outcome.message)
         }
     }
 
@@ -83,18 +94,31 @@ object AiConnectionProbe {
         is Result.Success ->
             "Connected. Model '${result.modelId}' replied in ${result.latencyMs} ms."
         Result.NotConfigured ->
-            "Not configured. Add your API key first."
+            "Not configured. Add your API key, base URL and model ID first."
         Result.Unauthorized ->
             "The provider rejected the API key (401/403). Check the key."
         Result.RateLimited ->
             "The provider is rate-limiting requests (429). Try again shortly."
         is Result.HttpError ->
-            "The provider returned an error (HTTP ${result.code})."
+            "The provider returned HTTP ${result.code}." + hintSuffix(result.providerHint) +
+                " If this is 404/405, check the base URL and the API format."
         Result.NetworkError ->
             "Could not reach the provider. Check the base URL and your connection."
-        Result.Malformed ->
-            "The provider replied, but not with a usable completion."
+        is Result.EmptyReply ->
+            "The provider replied but returned nothing" + reasonSuffix(result.reason) +
+                ". The model may have hit its token limit."
+        is Result.Malformed ->
+            "The provider replied, but not in a recognised format" + reasonSuffix(result.reason) +
+                ". Try a different API format."
+        is Result.ProviderError ->
+            "The provider reported an error" + reasonSuffix(result.message) + "."
     }
+
+    private fun reasonSuffix(value: String?): String =
+        value?.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
+
+    private fun hintSuffix(hint: String?): String =
+        hint?.takeIf { it.isNotBlank() }?.let { " Provider said: $it" }.orEmpty()
 
     // --------------------------------------------------------------- classification
 
