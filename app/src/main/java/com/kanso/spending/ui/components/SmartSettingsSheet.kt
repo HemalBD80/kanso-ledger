@@ -110,7 +110,8 @@ fun SmartSettingsSheet(
             val aiSettingsContext = LocalContext.current
             AiConfigSection(
                 store = remember(aiSettingsContext) { AiSettingsStore(aiSettingsContext) },
-                onTestConnection = actions.onTestAiConnection
+                onTestConnection = actions.onTestAiConnection,
+                onTestClassification = actions.onTestAiClassification
             )
 
             Spacer(Modifier.height(14.dp))

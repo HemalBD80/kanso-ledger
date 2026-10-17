@@ -91,7 +91,21 @@ data class SmsIngestSummary(
     val queuedForReview: Int,
     val duplicates: Int,
     val ignored: Int,
-    val batchId: String
+    val batchId: String,
+    /** Pending items reclassified and recorded by this pass (re-import upgrade). */
+    val upgraded: Int = 0,
+    /** Eligible messages actually sent to the AI this pass (0 when AI is off). */
+    val aiConsulted: Int = 0,
+    /** True when all three gates (feature + consent + credential) were open. */
+    val aiEnabled: Boolean = false,
+    /** Of those, how many returned a validated classification (used). */
+    val aiResolved: Int = 0,
+    /** Of those, how many failed — the local result stood. */
+    val aiFailed: Int = 0,
+    /** Credential-free, human-readable reasons for the failures (deduped, bounded). */
+    val aiFailureReasons: List<String> = emptyList(),
+    /** Confident detections that could not be written (e.g. no account). */
+    val persistenceFailures: Int = 0
 )
 
 /**
@@ -182,6 +196,10 @@ class SpendingRepository(
     // model's prior reply instead of paying for the same interpretation twice.
     private val aiInterpreter = AiSmsInterpreter(CachingAiTransport(HttpAiTransport(), aiCache))
 
+    /** All three gates must be open before a single byte may leave the device. */
+    private fun aiActive(): Boolean =
+        aiSettings.aiEnabled && aiSettings.aiConsentGranted && aiSettings.read().isConfigured
+
     private val aiAugmenter = AiSmsAugmenter(
         consultAi = { message ->
             withContext(Dispatchers.IO) {
@@ -193,9 +211,7 @@ class SpendingRepository(
                 )
             }
         },
-        enabled = {
-            aiSettings.aiEnabled && aiSettings.aiConsentGranted && aiSettings.read().isConfigured
-        }
+        enabled = { aiActive() }
     )
 
     /**
@@ -206,6 +222,18 @@ class SpendingRepository(
      */
     suspend fun testAiConnection(): AiConnectionProbe.Result = withContext(Dispatchers.IO) {
         AiConnectionProbe.probe(HttpAiTransport(), aiSettings.read())
+    }
+
+    /**
+     * Stronger on-demand diagnostic: runs a FICTIONAL, clearly-labelled bank
+     * SMS through the full interpret→validate pipeline against the configured
+     * provider. Distinguishes "the endpoint answers a ping" from "the model can
+     * actually classify this domain" — the connection test can pass while a
+     * wrong model ID or an unusable reply still yields zero imports. No real
+     * SMS or ledger data is involved.
+     */
+    suspend fun testAiClassification(): AiConnectionProbe.ClassificationResult = withContext(Dispatchers.IO) {
+        AiConnectionProbe.classify(HttpAiTransport(), aiSettings.read())
     }
 
     /**
@@ -842,6 +870,11 @@ class SpendingRepository(
         val accounts = spendingDao.getAllAccountsSnapshot()
         val known = HashSet<String>(spendingDao.getAllKnownFingerprints())
         known.addAll(spendingDao.getAllLedgerFingerprints())
+        // Pending (queued-for-review) detections are eligible for a re-import
+        // upgrade: a fingerprint already seen but not yet in the ledger can be
+        // reclassified when AI is (now) available, without touching the ones
+        // that were already recorded.
+        val queued = spendingDao.getPendingDetections().mapTo(HashSet()) { it.fingerprint }
         return IngestContext(
             knownFingerprints = known,
             mode = mode,
@@ -849,7 +882,8 @@ class SpendingRepository(
             nowMillis = System.currentTimeMillis(),
             hintToAccountId = accounts.filter { it.note.isNotBlank() }
                 .associate { it.note.lowercase() to it.id },
-            nameToAccountId = accounts.associate { it.name.lowercase() to it.id }
+            nameToAccountId = accounts.associate { it.name.lowercase() to it.id },
+            queuedFingerprints = queued
         )
     }
 
@@ -876,8 +910,65 @@ class SpendingRepository(
         val aiResult = aiAugmenter.buildOverrides(messages)
         val plan = SmsIngestPlanner.plan(messages, context, aiResult.overrides)
         val now = context.nowMillis
+        val aiWasActive = aiActive()
+        var upgraded = 0
+        var persistenceFailures = 0
 
         for (item in plan.items) {
+            // ---- Re-import upgrade: replace a still-pending detection ----
+            // A message first queued while AI was off (or mis-parsed) can be
+            // reclassified by a later import. Only a still-PENDING detection is
+            // touched, and only when the new result would record immediately —
+            // so this never blindly imports a queued item and never double-posts.
+            if (item.upgrade) {
+                val planned = item.detection ?: continue
+                val existing = spendingDao.findDetectionByFingerprint(item.fingerprint)
+                if (existing == null || existing.reviewStatus != "PENDING") continue
+                val tx = planned.parsed
+                val candidate = existing.copy(
+                    provider = tx.provider,
+                    txType = tx.type.name,
+                    action = tx.action.name,
+                    amountCents = tx.amountCents,
+                    feeCents = tx.feeCents,
+                    timestampEpochMillis = tx.timestampMillis,
+                    merchant = tx.merchantOrCounterparty,
+                    refId = tx.referenceId ?: "",
+                    accountHint = tx.accountHint ?: "",
+                    reportedBalanceCents = tx.reportedBalanceCents,
+                    confidence = tx.confidence,
+                    reviewReason = tx.reviewReason ?: "",
+                    categoryId = suggestCategoryId(
+                        listOf(tx.merchantOrCounterparty, tx.provider)
+                            .filter { it.isNotBlank() }.joinToString(" "),
+                        tx.aiCategorySuggestion
+                    ),
+                    paymentMethodHint = tx.aiPaymentMethodSuggestion ?: "",
+                    accountId = planned.resolvedAccountId.ifBlank { existing.accountId },
+                    batchId = batchId,
+                    updatedAtMillis = now
+                )
+                val outcome = runCatching { materializeDetection(candidate, DetectionApproval()) }
+                val link = outcome.getOrNull()
+                if (link != null) {
+                    val linked = candidate.copy(
+                        reviewStatus = "APPROVED",
+                        linkedRecordType = link.first,
+                        linkedRecordId = link.second
+                    )
+                    spendingDao.updateDetection(linked)
+                    applyReportedBalance(linked)
+                    spendingDao.updateSmsMetaOutcome(item.fingerprint, "RECORDED", now)
+                    upgraded++
+                } else {
+                    // Could not place it safely: keep the fresh, AI-enriched
+                    // fields but leave it pending for a human.
+                    persistenceFailures++
+                    spendingDao.updateDetection(candidate.copy(reviewStatus = "PENDING"))
+                }
+                continue
+            }
+
             spendingDao.insertSmsMetaIfNew(
                 SmsMetaEntity(
                     fingerprint = item.fingerprint,
@@ -934,6 +1025,7 @@ class SpendingRepository(
                     // Something about this message prevents a safe write
                     // (e.g. a withdrawal we cannot place): queue it for human
                     // review instead of guessing or crashing.
+                    persistenceFailures++
                     finalDetection = finalDetection.copy(
                         reviewStatus = "PENDING",
                         reviewReason = outcome.exceptionOrNull()?.message ?: "needs manual setup"
@@ -948,12 +1040,31 @@ class SpendingRepository(
             }
         }
 
-        if (plan.items.isNotEmpty()) {
+        // Credential-free diagnostic summary of what the AI did this pass, so a
+        // "connection works but nothing imports" report becomes actionable.
+        val aiFailureReasons = aiResult.failuresByKind.entries
+            .sortedByDescending { it.value }
+            .take(4)
+            .map { "${aiInterpreter.describeFailure(it.key)} (x${it.value})" }
+
+        if (plan.items.isNotEmpty() || upgraded > 0) {
+            val aiNote = if (aiResult.aiConsulted > 0) {
+                val reasons = if (aiFailureReasons.isNotEmpty()) {
+                    " [" + aiFailureReasons.joinToString("; ") + "]"
+                } else {
+                    ""
+                }
+                " AI consulted ${aiResult.aiConsulted} time(s): ${aiResult.aiResolved} resolved, " +
+                    "${aiResult.aiFailed} failed$reasons."
+            } else {
+                ""
+            }
             logAudit(
                 "sms", batchId, "imported",
                 "Imported ${plan.items.size} message(s): ${plan.recordedCount} recorded, " +
                     "${plan.pendingCount} queued for review, ${plan.duplicateCount} duplicate(s), " +
-                    "${plan.ignoredCount} not financial (no content stored)"
+                    "${plan.ignoredCount} not financial, $upgraded upgraded (no content stored)." +
+                    aiNote
             )
         }
         return SmsIngestSummary(
@@ -962,7 +1073,14 @@ class SpendingRepository(
             queuedForReview = plan.pendingCount,
             duplicates = plan.duplicateCount,
             ignored = plan.ignoredCount,
-            batchId = batchId
+            batchId = batchId,
+            upgraded = upgraded,
+            aiConsulted = aiResult.aiConsulted,
+            aiEnabled = aiWasActive,
+            aiResolved = aiResult.aiResolved,
+            aiFailed = aiResult.aiFailed,
+            aiFailureReasons = aiFailureReasons,
+            persistenceFailures = persistenceFailures
         )
     }
 

@@ -27,6 +27,29 @@ object SmsParser {
     /** Words that mark a prior transaction being undone — never new income. */
     private val REVERSAL_HINTS = listOf("reversal", "reversed", "chargeback", "charge back")
 
+    /**
+     * A currency token in any form the app recognises: the ASCII forms plus the
+     * BDT symbol. Several banks omit the word and rely on the symbol alone.
+     */
+    private val CURRENCY_MENTION = Regex("(?:\\b(?:BDT|Tk\\.?|taka)\\b|৳)", RegexOption.IGNORE_CASE)
+
+    /**
+     * An amount-shaped number: either comma-grouped ("1,250") or carrying
+     * paisha ("1250.00"). A bare integer is deliberately NOT enough — it could
+     * be a date, a code or a count — so an amount only counts as a financial
+     * signal when it appears with a transaction verb.
+     */
+    private val AMOUNT_LIKE = Regex("\\d[\\d,]*\\.\\d{1,2}|\\d{1,3}(?:,\\d{2,3})+")
+
+    /** Transaction verbs that mark a message as *possibly* financial. */
+    private val FINANCIAL_VERB = Regex(
+        "\\b(?:debit(?:ed)?|credit(?:ed)?|sent|receive[ds]?|paid|payment|transfer(?:red)?|" +
+            "withdraw(?:n|al)?|deposit(?:ed)?|purchas(?:e|ed)|spent|spend|recharge[ds]?|bill|" +
+            "balance|atm|cash\\s*(?:in|out)|refund(?:ed)?|cashback|cash\\s*back|reward|" +
+            "fee|charge[sd]?|transaction|trx|txn)\\b",
+        RegexOption.IGNORE_CASE
+    )
+
     private val merchantPatterns = listOf(
         // "at AGORA on 15/10/26 ..." / "at STAR KITCHEN. Ref ..."
         Regex("\\bat\\s+([A-Za-z][A-Za-z0-9&.'-]{1,30}?)(?=\\s+(?:on|for|ref|trx|rn|bal|avl|new|fee|charge)\\b|[.,]|$)", RegexOption.IGNORE_CASE),
@@ -63,9 +86,21 @@ object SmsParser {
         val rule = BuiltinSmsRules.ALL.filter { it.matchesSender(sender) }
             .maxByOrNull { it.priority } ?: BuiltinSmsRules.GENERIC
 
-        // Must at least look financial (currency mention) to continue.
-        if (!Regex("\\b(?:BDT|Tk\\.?|taka)\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)) {
-            return SmsParseResult.NotFinancial("no currency reference")
+        // Must at least LOOK financial to continue. Genuinely non-financial text
+        // (OTP, promo, personal chatter) has no currency, no transaction
+        // reference and no amount+verb — it is dropped here and is NEVER sent to
+        // the AI. Anything that does show a financial signal but cannot be read
+        // locally is kept and becomes Ambiguous below, so the AI (when enabled)
+        // can interpret it and a human can review it otherwise. This gate used
+        // to reject any message lacking the literal token "BDT"/"Tk"/"taka",
+        // which silently discarded real bank SMS and meant the AI was never
+        // consulted for them.
+        val hasCurrency = CURRENCY_MENTION.containsMatchIn(text)
+        val hasReference = hasTransactionReference(text)
+        val hasAmountLike = AMOUNT_LIKE.containsMatchIn(text)
+        val hasVerb = FINANCIAL_VERB.containsMatchIn(text)
+        if (!(hasCurrency || hasReference || (hasAmountLike && hasVerb))) {
+            return SmsParseResult.NotFinancial("no financial indicators")
         }
 
         // 4. Type classification: earliest keyword hit wins, so a fee mention

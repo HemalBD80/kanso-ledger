@@ -1,5 +1,6 @@
 package com.kanso.spending.domain.ai
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -18,6 +19,15 @@ object AiResponseParser {
     /** Largest reply we will even attempt to parse, as a cheap size guard. */
     const val MAX_REPLY_CHARS = 8_000
 
+    /**
+     * Upper bound on the raw transport envelope. A reasoning model may include a
+     * long hidden trace in the envelope body, so this is generous; the tight
+     * [MAX_REPLY_CHARS] limit is applied to the extracted assistant content, not
+     * the envelope — otherwise a valid small JSON answer would be thrown away
+     * just because the trace around it was large.
+     */
+    const val MAX_ENVELOPE_CHARS = 512_000
+
     sealed class ParseOutcome {
         data class Parsed(val proposal: AiTransactionProposal) : ParseOutcome()
         data object Malformed : ParseOutcome()
@@ -25,7 +35,7 @@ object AiResponseParser {
 
     fun parse(replyText: String?): ParseOutcome {
         if (replyText.isNullOrBlank()) return ParseOutcome.Malformed
-        if (replyText.length > MAX_REPLY_CHARS) return ParseOutcome.Malformed
+        if (replyText.length > MAX_ENVELOPE_CHARS) return ParseOutcome.Malformed
 
         val trimmed = replyText.trim()
         val isEnvelope = runCatching { JSONObject(trimmed).has("choices") }.getOrDefault(false)
@@ -42,6 +52,7 @@ object AiResponseParser {
             trimmed
         }
 
+        if (source.length > MAX_REPLY_CHARS) return ParseOutcome.Malformed
         val payload = extractJsonObject(source) ?: return ParseOutcome.Malformed
         return ParseOutcome.Parsed(toProposal(payload))
     }
@@ -56,11 +67,18 @@ object AiResponseParser {
         val choices = envelope.optJSONArray("choices") ?: return null
         if (choices.length() == 0) return null
         val message = choices.optJSONObject(0)?.optJSONObject("message") ?: return null
-        // content is a string in the real API; tolerate an embedded object too.
-        val embedded = message.optJSONObject("content")
-        return when {
-            message.isNull("content") -> null
-            embedded != null -> embedded.toString()
+        return when (val content = message.opt("content")) {
+            null, JSONObject.NULL -> null
+            // Some providers/proxies return content as a list of typed blocks
+            // (e.g. [{"type":"text","text":"{...}"}]). Concatenate the text parts.
+            is JSONArray -> buildString {
+                for (i in 0 until content.length()) {
+                    val part = content.optJSONObject(i) ?: continue
+                    val text = part.optString("text").ifBlank { part.optString("content") }
+                    if (text.isNotBlank()) append(text)
+                }
+            }.takeIf { it.isNotBlank() }
+            is JSONObject -> content.toString()
             else -> message.optString("content").takeIf { it.isNotBlank() }
         }
     }

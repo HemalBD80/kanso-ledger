@@ -220,8 +220,16 @@ class AiUnderstandingV24Test {
         assertTrue(uncertain.needsReview)
 
         val messages = listOf(
-            RawInboundSms("HBL Bank", "Money movement of BDT for transaction one processed today.", now),
-            RawInboundSms("HBL Bank", "Money movement of BDT for transaction two processed today.", now + 1)
+            RawInboundSms(
+                "HBL Bank",
+                "Money movement of BDT for transaction one processed today. Ref: MM0001",
+                now
+            ),
+            RawInboundSms(
+                "HBL Bank",
+                "Money movement of BDT for transaction two processed today. Ref: MM0002",
+                now + 1
+            )
         )
         val overrides = mapOf(
             0 to SmsParseResult.Financial(confident),

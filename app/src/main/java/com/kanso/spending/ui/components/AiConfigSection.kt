@@ -51,7 +51,12 @@ import com.kanso.spending.ui.theme.LocalKansoColors
 fun AiConfigSection(
     store: AiSettingsStore,
     /** Real connectivity probe wired to the repository. Null hides the button. */
-    onTestConnection: (((String) -> Unit) -> Unit)? = null
+    onTestConnection: (((String) -> Unit) -> Unit)? = null,
+    /**
+     * Stronger "can the model actually classify a bank SMS?" probe. Null hides
+     * the button.
+     */
+    onTestClassification: (((String) -> Unit) -> Unit)? = null
 ) {
     val colors = LocalKansoColors.current
 
@@ -193,6 +198,34 @@ fun AiConfigSection(
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.inkSecondary,
                     modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+                )
+            }
+        }
+
+        // A trivial "OK" ping can succeed while real classification does not
+        // (wrong model ID for the provider, a model that ignores the JSON
+        // contract, or a truncated reply). This second probe sends a FICTIONAL,
+        // clearly-labelled bank SMS through the full classify pipeline so the
+        // user can tell the two cases apart. No real SMS or ledger data is sent.
+        if (onTestClassification != null) {
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    store.write(modelId = modelId, baseUrl = baseUrl, apiKey = apiKey.ifBlank { null })
+                    testing = true
+                    testResult = null
+                    onTestClassification { description ->
+                        testing = false
+                        testResult = description
+                    }
+                },
+                enabled = !testing && keyPresent,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = colors.elevatedSurface)
+            ) {
+                Text(
+                    if (testing) "Testing classification…" else "Test classification (fictional SMS)",
+                    color = if (keyPresent) colors.inkPrimary else colors.inkMuted
                 )
             }
         }

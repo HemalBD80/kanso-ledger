@@ -281,6 +281,7 @@ class MainActivity : FragmentActivity() {
         onDeleteCategoryRule = { viewModel.deleteCategoryRule(it) },
         // ---- optional AI diagnostics & narrative
         onTestAiConnection = { onResult -> viewModel.testAiConnection(onResult) },
+        onTestAiClassification = { onResult -> viewModel.testAiClassification(onResult) },
         onGenerateAiNarrative = { income, expense, top, onResult ->
             viewModel.generateAiNarrative(income, expense, top, onResult)
         },

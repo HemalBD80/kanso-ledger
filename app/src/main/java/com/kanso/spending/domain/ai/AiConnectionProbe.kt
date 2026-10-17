@@ -95,4 +95,84 @@ object AiConnectionProbe {
         Result.Malformed ->
             "The provider replied, but not with a usable completion."
     }
+
+    // --------------------------------------------------------------- classification
+
+    /**
+     * Outcome of the stronger [classify] diagnostic.
+     */
+    sealed class ClassificationResult {
+        /** The model returned a valid, structured classification. */
+        data class Success(
+            val txType: String,
+            val amountCents: Long?,
+            val direction: String?
+        ) : ClassificationResult()
+
+        /** The model read the (clearly financial) fixture as non-financial. */
+        data class NotFinancial(val reason: String) : ClassificationResult()
+
+        /** No usable classification — carries the failure category. */
+        data class Failed(
+            val reason: String,
+            val kind: AiSmsInterpreter.FailureKind
+        ) : ClassificationResult()
+
+        /** No key/base/model configured — nothing was sent. */
+        data object NotConfigured : ClassificationResult()
+    }
+
+    /**
+     * A fabricated, clearly-labelled bank SMS used ONLY by [classify]. It is
+     * explicitly marked as a self-test and contains a placeholder account and
+     * reference — no real SMS, account number or ledger value is ever sent.
+     */
+    const val FIXTURE_SENDER = "KANSO-SELFTEST"
+    const val FIXTURE_BODY =
+        "KANSO SELF-TEST (fictional message; not a real transaction). " +
+            "Your A/C ***0000 has been debited by BDT 1,250.00 on 01/01/2026. " +
+            "Ref: TESTREF0001. Available Balance BDT 5,000.00."
+    private const val FIXTURE_TIME_MILLIS = 1_767_225_600_000L // 2026-01-01T00:00:00Z
+
+    /**
+     * Stronger diagnostic than [probe]: run the fixed fictional message through
+     * the SAME interpret → parse → validate pipeline used for real imports, and
+     * report whether a valid structured classification came back.
+     *
+     * A trivial "OK" ping can succeed while real classification does not — the
+     * model ID may be wrong for the provider, the model may ignore the JSON
+     * contract, or the reply may be truncated/unparseable. This turns the
+     * "connection test passes but nothing imports" symptom into a specific,
+     * actionable message. Never throws; never carries the credential.
+     */
+    fun classify(transport: AiTransport, config: AiConfig): ClassificationResult {
+        if (!config.isConfigured) return ClassificationResult.NotConfigured
+        val outcome = AiSmsInterpreter(transport)
+            .interpret(config, FIXTURE_SENDER, FIXTURE_BODY, FIXTURE_TIME_MILLIS)
+        return when (outcome) {
+            is AiSmsInterpreter.Outcome.Extracted -> ClassificationResult.Success(
+                txType = outcome.transaction.type.name,
+                amountCents = outcome.transaction.amountCents,
+                direction = outcome.transaction.reportedDirection
+            )
+            is AiSmsInterpreter.Outcome.NotFinancial ->
+                ClassificationResult.NotFinancial(outcome.reason)
+            is AiSmsInterpreter.Outcome.Failed ->
+                ClassificationResult.Failed(outcome.reason, outcome.kind)
+        }
+    }
+
+    /** Human-readable, credential-free message for a [ClassificationResult]. */
+    fun describe(result: ClassificationResult): String = when (result) {
+        ClassificationResult.NotConfigured ->
+            "Not configured. Add your API key first."
+        is ClassificationResult.Success ->
+            "Classification OK: the model read the test message as ${result.txType}" +
+                if (result.amountCents != null) " with an amount." else " with no amount."
+        is ClassificationResult.NotFinancial ->
+            "The model read the test bank SMS as non-financial, so it cannot classify this " +
+                "domain — try a capable model ID. Reason: ${result.reason}"
+        is ClassificationResult.Failed ->
+            "Classification failed: ${result.reason} (${result.kind.name})."
+    }
 }

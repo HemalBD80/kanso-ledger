@@ -794,6 +794,28 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
     }
 
     /**
+     * Stronger diagnostic: sends a FICTIONAL, clearly-labelled bank SMS through
+     * the full classify pipeline against the configured provider and reports the
+     * typed outcome. This catches the "connection works but nothing imports"
+     * case (wrong model ID, non-JSON reply, unparseable response) that a trivial
+     * "OK" ping cannot. No real SMS or ledger data is sent.
+     */
+    fun testAiClassification(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val result = runCatching { repository.testAiClassification() }
+                .getOrElse {
+                    AiConnectionProbe.ClassificationResult.Failed(
+                        "Unexpected error while classifying.",
+                        com.kanso.spending.domain.ai.AiSmsInterpreter.FailureKind.OTHER
+                    )
+                }
+            val description = AiConnectionProbe.describe(result)
+            smartStatus(description)
+            onResult(description)
+        }
+    }
+
+    /**
      * Optional AI narrative over the month's locally-computed figures. The
      * numbers stay authoritative; this only asks the model to describe them.
      * Returns null (and shows no narrative) on any failure or when AI is off.
@@ -1033,9 +1055,27 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
     private fun describeSummary(summary: SmsIngestSummary): String = buildString {
         append("${summary.totalMessages} message(s) read — ")
         append("${summary.recorded} recorded, ${summary.queuedForReview} waiting for review")
+        if (summary.upgraded > 0) append(", ${summary.upgraded} reclassified out of review")
         if (summary.duplicates > 0) append(", ${summary.duplicates} duplicate(s) skipped")
         if (summary.ignored > 0) append(", ${summary.ignored} not financial")
-        append(". No message bodies were stored.")
+        append(".")
+        if (summary.aiConsulted > 0) {
+            append(" AI: ${summary.aiResolved} classified, ${summary.aiFailed} failed")
+            if (summary.aiFailureReasons.isNotEmpty()) {
+                append(" — ${summary.aiFailureReasons.joinToString("; ")}")
+            }
+            append(".")
+        } else if (!summary.aiEnabled) {
+            append(" AI assistance is off or not consented — enable it in settings to auto-classify.")
+        } else if (summary.recorded == 0 && summary.queuedForReview == 0 && summary.upgraded == 0) {
+            // The classic "connection works but nothing imports" symptom: AI was
+            // on but no eligible message was sent, so point at the diagnostic.
+            append(" No eligible message reached the AI — run 'Test classification' in AI settings.")
+        }
+        if (summary.persistenceFailures > 0) {
+            append(" ${summary.persistenceFailures} could not be saved and were kept for review.")
+        }
+        append(" No message bodies were stored.")
     }
 
     // -------------------------------------------------------- navigation etc.

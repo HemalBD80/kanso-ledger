@@ -74,6 +74,12 @@ data class SmartLedgerActions(
     /** Real connectivity probe against the configured provider (no SMS sent). */
     val onTestAiConnection: (onResult: (String) -> Unit) -> Unit,
     /**
+     * Stronger diagnostic: a FICTIONAL labelled bank SMS through the full
+     * classify pipeline, to catch "connects but cannot classify" (bad model ID,
+     * non-JSON reply). No real SMS or ledger data is sent.
+     */
+    val onTestAiClassification: (onResult: (String) -> Unit) -> Unit,
+    /**
      * Optional AI narrative over the month's locally-computed figures. The
      * numbers stay authoritative; the AI only describes them. Null on failure.
      */

@@ -61,7 +61,9 @@ class AiSmsAugmenter(
         /** Index → AI-supplied parse, handed to the planner as overrides. */
         val overrides: Map<Int, SmsParseResult>,
         /** Per-message routing, in input order. */
-        val routes: List<Route>
+        val routes: List<Route>,
+        /** Failure categories for every [Route.AI_FALLBACK], in encounter order. */
+        val failures: List<AiSmsInterpreter.FailureKind> = emptyList()
     ) {
         /** Messages actually transmitted for AI help. */
         val aiConsulted: Int
@@ -70,6 +72,11 @@ class AiSmsAugmenter(
                     it == Route.AI_NOT_FINANCIAL || it == Route.AI_DECLINED
             }
         val aiResolved: Int get() = routes.count { it == Route.AI_RESOLVED }
+
+        /** How many consultations failed, and why — a credential-free diagnostic. */
+        val aiFailed: Int get() = failures.size
+        val failuresByKind: Map<AiSmsInterpreter.FailureKind, Int>
+            get() = failures.groupingBy { it }.eachCount()
     }
 
     /**
@@ -79,6 +86,7 @@ class AiSmsAugmenter(
     suspend fun buildOverrides(messages: List<RawInboundSms>): Result {
         val overrides = HashMap<Int, SmsParseResult>()
         val routes = ArrayList<Route>(messages.size)
+        val failures = ArrayList<AiSmsInterpreter.FailureKind>()
 
         val active = enabled()
         for ((index, message) in messages.withIndex()) {
@@ -98,7 +106,12 @@ class AiSmsAugmenter(
 
             // 3. AI on: interpret every eligible message.
             val outcome = runCatching { consultAi(message) }
-                .getOrDefault(AiSmsInterpreter.Outcome.Failed("AI consultation threw."))
+                .getOrDefault(
+                    AiSmsInterpreter.Outcome.Failed(
+                        "AI consultation threw.",
+                        AiSmsInterpreter.FailureKind.OTHER
+                    )
+                )
             when (outcome) {
                 is AiSmsInterpreter.Outcome.Extracted -> {
                     overrides[index] = SmsParseResult.Financial(outcome.transaction)
@@ -116,9 +129,12 @@ class AiSmsAugmenter(
                         routes += Route.AI_DECLINED
                     }
                 }
-                is AiSmsInterpreter.Outcome.Failed -> routes += Route.AI_FALLBACK
+                is AiSmsInterpreter.Outcome.Failed -> {
+                    routes += Route.AI_FALLBACK
+                    failures += outcome.kind
+                }
             }
         }
-        return Result(overrides, routes)
+        return Result(overrides, routes, failures)
     }
 }

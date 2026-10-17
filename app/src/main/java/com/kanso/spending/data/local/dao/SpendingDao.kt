@@ -318,6 +318,12 @@ interface SpendingDao {
     @Query("SELECT * FROM sms_meta WHERE fingerprint = :fingerprint LIMIT 1")
     suspend fun findSmsMetaByFingerprint(fingerprint: String): SmsMetaEntity?
 
+    @Query(
+        "UPDATE sms_meta SET outcome = :outcome, processed_at_millis = :processedAtMillis " +
+            "WHERE fingerprint = :fingerprint"
+    )
+    suspend fun updateSmsMetaOutcome(fingerprint: String, outcome: String, processedAtMillis: Long)
+
     @Query("SELECT fingerprint FROM sms_meta")
     suspend fun getAllKnownFingerprints(): List<String>
 

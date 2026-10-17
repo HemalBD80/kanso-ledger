@@ -31,7 +31,15 @@ data class IngestContext(
     /** Lowercased account hint (e.g. "***4512") → account id. */
     val hintToAccountId: Map<String, String> = emptyMap(),
     /** Lowercased account name (e.g. "bkash") → account id, matched on provider. */
-    val nameToAccountId: Map<String, String> = emptyMap()
+    val nameToAccountId: Map<String, String> = emptyMap(),
+    /**
+     * Fingerprints that currently have a PENDING detection (queued for review,
+     * no ledger row yet). A re-import that now produces a confident, validated
+     * result for one of these may UPGRADE it instead of skipping it as a
+     * duplicate — this is how messages first seen while AI was off (or
+     * mis-parsed) get reclassified once AI is enabled.
+     */
+    val queuedFingerprints: Set<String> = emptySet()
 )
 
 /** One detection row the repository must persist (plus optional ledger write). */
@@ -58,7 +66,12 @@ data class PlannedSms(
     /** SmsMetaEntity outcome: RECORDED | QUEUED | IGNORED | AMBIGUOUS. */
     val metaOutcome: String,
     /** Null → meta row only (nothing worth reviewing). */
-    val detection: PlannedDetection?
+    val detection: PlannedDetection?,
+    /**
+     * True → this replaces an existing PENDING detection for the same
+     * fingerprint (re-import reclassification), rather than creating a new one.
+     */
+    val upgrade: Boolean = false
 )
 
 /** A skipped duplicate in structured form — message content is never included. */
@@ -82,6 +95,10 @@ data class IngestPlan(
 
     val recordedCount: Int
         get() = items.count { it.detection?.writeLedger == true }
+
+    /** Items that replace an existing pending detection (re-import upgrade). */
+    val upgradedCount: Int
+        get() = items.count { it.upgrade }
 }
 
 /**
@@ -176,17 +193,36 @@ object SmsIngestPlanner {
 
                 is SmsParseResult.Financial -> {
                     val tx = result.transaction
-                    if (!seen.add(tx.fingerprint)) {
-                        duplicates++
-                        duplicateItems += DuplicateNotice(
-                            provider = tx.provider,
-                            amountCents = tx.amountCents,
-                            timestampMillis = tx.timestampMillis,
-                            referenceId = tx.referenceId
-                        )
+                    // Identity is the DETERMINISTIC local fingerprint, never the
+                    // model's, so re-importing the same message is always
+                    // recognised even when the AI reports slightly different
+                    // fields — reprocessing stays idempotent.
+                    val identity = identityFingerprint(local, tx.fingerprint)
+                    val planned = planFinancial(message, tx, context, identity)
+                    if (!seen.add(identity)) {
+                        // A fingerprint we have already seen is normally a
+                        // duplicate — but if it is still PENDING (queued, no
+                        // ledger row) and this pass now yields a confident,
+                        // recordable result, upgrade it instead of skipping.
+                        // This is how re-running the import after enabling AI
+                        // reclassifies previously-queued messages without ever
+                        // blindly importing them or double-recording.
+                        if (planned.detection?.writeLedger == true &&
+                            identity in context.queuedFingerprints
+                        ) {
+                            items += planned.copy(upgrade = true)
+                        } else {
+                            duplicates++
+                            duplicateItems += DuplicateNotice(
+                                provider = tx.provider,
+                                amountCents = tx.amountCents,
+                                timestampMillis = tx.timestampMillis,
+                                referenceId = tx.referenceId
+                            )
+                        }
                         continue
                     }
-                    items += planFinancial(message, tx, context)
+                    items += planned
                 }
             }
         }
@@ -203,7 +239,8 @@ object SmsIngestPlanner {
     private fun planFinancial(
         message: RawInboundSms,
         tx: ParsedSmsTransaction,
-        context: IngestContext
+        context: IngestContext,
+        fingerprint: String
     ): PlannedSms {
         val resolved = resolveAccountId(tx, context)
 
@@ -217,7 +254,7 @@ object SmsIngestPlanner {
                 else -> "PENDING"                      // ask which account this belongs to
             }
             return PlannedSms(
-                fingerprint = tx.fingerprint,
+                fingerprint = fingerprint,
                 sender = message.sender,
                 provider = tx.provider,
                 txType = tx.type.name,
@@ -245,7 +282,7 @@ object SmsIngestPlanner {
         }
 
         return PlannedSms(
-            fingerprint = tx.fingerprint,
+            fingerprint = fingerprint,
             sender = message.sender,
             provider = tx.provider,
             txType = tx.type.name,
@@ -260,6 +297,20 @@ object SmsIngestPlanner {
                 resolvedAccountId = resolved
             )
         )
+    }
+
+    /**
+     * The message's stable identity: the DETERMINISTIC local parser's
+     * fingerprint, which does not change when the AI later re-reads the same
+     * message. Falls back to [fallback] only in the impossible case where the
+     * local parse was already non-financial (it never reaches the Financial
+     * branch). Using the local identity is what makes re-imports idempotent even
+     * when the resolved fields (and hence the model-side fingerprint) differ.
+     */
+    private fun identityFingerprint(local: SmsParseResult, fallback: String): String = when (local) {
+        is SmsParseResult.Financial -> local.transaction.fingerprint
+        is SmsParseResult.Ambiguous -> local.fingerprint
+        is SmsParseResult.NotFinancial -> fallback
     }
 
     /**
