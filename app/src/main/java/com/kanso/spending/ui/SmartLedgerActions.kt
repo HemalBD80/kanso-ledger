@@ -70,5 +70,19 @@ data class SmartLedgerActions(
     val onSaveCategoryRule: (keyword: String, categoryId: String) -> Unit,
     val onDeleteCategoryRule: (ruleId: String) -> Unit,
 
+    // ---- optional AI diagnostics & narrative
+    /** Real connectivity probe against the configured provider (no SMS sent). */
+    val onTestAiConnection: (onResult: (String) -> Unit) -> Unit,
+    /**
+     * Optional AI narrative over the month's locally-computed figures. The
+     * numbers stay authoritative; the AI only describes them. Null on failure.
+     */
+    val onGenerateAiNarrative: (
+        incomeCents: Long,
+        expenseCents: Long,
+        topCategories: List<Pair<String, Long>>,
+        onResult: (String?) -> Unit
+    ) -> Unit,
+
     val onClearSmartStatus: () -> Unit
 )

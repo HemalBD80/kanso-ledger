@@ -50,7 +50,15 @@ data class ParsedSmsTransaction(
     val needsReview: Boolean,
     val reviewReason: String?,
     /** Stable fingerprint for idempotent de-duplication. */
-    val fingerprint: String
+    val fingerprint: String,
+    /**
+     * Optional category hint from the AI path only, used as the LOWEST-priority
+     * signal by the repository (after user rules and bundled keywords). It is a
+     * free-form string; the repository maps it to a real bundled category id via
+     * [com.kanso.spending.domain.ai.AiCategoryMapper] and discards anything that
+     * does not resolve. Null for every locally-parsed message.
+     */
+    val aiCategorySuggestion: String? = null
 )
 
 /** Result of parsing one message: recognised financial content or not. */

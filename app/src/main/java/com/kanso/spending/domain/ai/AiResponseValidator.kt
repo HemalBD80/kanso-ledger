@@ -183,7 +183,8 @@ object AiResponseValidator {
             confidence = confidencePct,
             needsReview = needsReview,
             reviewReason = reviewReason,
-            fingerprint = fingerprint
+            fingerprint = fingerprint,
+            aiCategorySuggestion = proposal.categorySuggestion?.trim()?.takeIf { it.isNotEmpty() }
         )
     }
 

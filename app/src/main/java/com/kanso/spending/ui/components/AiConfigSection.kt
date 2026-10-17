@@ -48,7 +48,11 @@ import com.kanso.spending.ui.theme.LocalKansoColors
  * never hardcoded, committed, or built into the APK.
  */
 @Composable
-fun AiConfigSection(store: AiSettingsStore) {
+fun AiConfigSection(
+    store: AiSettingsStore,
+    /** Real connectivity probe wired to the repository. Null hides the button. */
+    onTestConnection: ((String) -> Unit)? = null
+) {
     val colors = LocalKansoColors.current
 
     // Local editing state, seeded once from the persisted store. Nothing is
@@ -60,6 +64,8 @@ fun AiConfigSection(store: AiSettingsStore) {
     var baseUrl by remember { mutableStateOf(initial.baseUrl) }
     var apiKey by remember { mutableStateOf(initial.apiKey.orEmpty()) }
     var saved by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+    var testing by remember { mutableStateOf(false) }
 
     val keyPresent = apiKey.isNotBlank()
     val gatesOpen = enabled && consent && keyPresent
@@ -155,6 +161,40 @@ fun AiConfigSection(store: AiSettingsStore) {
             colors = ButtonDefaults.buttonColors(containerColor = colors.positiveAccent)
         ) {
             Text(if (saved) "Saved" else "Save AI settings", color = colors.inkPrimary)
+        }
+
+        if (onTestConnection != null) {
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    // Persist what's on screen so the probe uses exactly these
+                    // settings, then run ONE real request. No SMS, no ledger data.
+                    store.write(modelId = modelId, baseUrl = baseUrl, apiKey = apiKey.ifBlank { null })
+                    testing = true
+                    testResult = null
+                    onTestConnection { description ->
+                        testing = false
+                        testResult = description
+                    }
+                },
+                enabled = !testing && keyPresent,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = colors.elevatedSurface)
+            ) {
+                Text(
+                    if (testing) "Testing connection…" else "Test connection",
+                    color = if (keyPresent) colors.inkPrimary else colors.inkMuted
+                )
+            }
+            testResult?.let { result ->
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    result,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.inkSecondary,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+                )
+            }
         }
 
         Spacer(Modifier.height(8.dp))

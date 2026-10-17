@@ -37,6 +37,7 @@ import com.kanso.spending.domain.MonthlyLedgerAnalytics
 import com.kanso.spending.domain.SpendingAnalyticsEngine
 import com.kanso.spending.domain.accounts.AccountBalanceEngine
 import com.kanso.spending.domain.accounts.AccountState
+import com.kanso.spending.domain.ai.AiConnectionProbe
 import com.kanso.spending.domain.calendar.CalendarEngine
 import com.kanso.spending.domain.calendar.CalendarSummary
 import com.kanso.spending.domain.goals.GoalContribution
@@ -774,6 +775,40 @@ class SpendingViewModel(private val repository: SpendingRepository) : ViewModel(
                     onResult(null)
                 }
             )
+        }
+    }
+
+    /**
+     * Real connectivity diagnostic: sends ONE trivial "OK" request to the
+     * configured provider and reports the typed outcome. No SMS and no ledger
+     * data is transmitted. [onResult] receives a credential-free description.
+     */
+    fun testAiConnection(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val result = runCatching { repository.testAiConnection() }
+                .getOrElse { AiConnectionProbe.Result.NetworkError }
+            val description = AiConnectionProbe.describe(result)
+            smartStatus(description)
+            onResult(description)
+        }
+    }
+
+    /**
+     * Optional AI narrative over the month's locally-computed figures. The
+     * numbers stay authoritative; this only asks the model to describe them.
+     * Returns null (and shows no narrative) on any failure or when AI is off.
+     */
+    fun generateAiNarrative(
+        incomeCents: Long,
+        expenseCents: Long,
+        topCategories: List<Pair<String, Long>>,
+        onResult: (String?) -> Unit
+    ) {
+        viewModelScope.launch {
+            val narrative = runCatching {
+                repository.generateAiNarrative(incomeCents, expenseCents, topCategories)
+            }.getOrNull()
+            onResult(narrative)
         }
     }
 

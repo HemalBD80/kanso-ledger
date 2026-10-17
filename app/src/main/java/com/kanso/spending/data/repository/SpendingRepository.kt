@@ -26,6 +26,9 @@ import com.kanso.spending.data.model.MoneySource
 import com.kanso.spending.data.model.PaymentMethod
 import com.kanso.spending.domain.accounts.AccountState
 import com.kanso.spending.domain.accounts.AccountStateFactory
+import com.kanso.spending.domain.ai.AiCategoryMapper
+import com.kanso.spending.domain.ai.AiConnectionProbe
+import com.kanso.spending.domain.ai.AiInsightsNarrator
 import com.kanso.spending.domain.ai.AiSmsAugmenter
 import com.kanso.spending.domain.ai.AiSmsInterpreter
 import com.kanso.spending.domain.categorization.CategoryRule
@@ -188,6 +191,42 @@ class SpendingRepository(
             aiSettings.aiEnabled && aiSettings.aiConsentGranted && aiSettings.read().isConfigured
         }
     )
+
+    /**
+     * On-demand connectivity diagnostic: performs ONE real request to the
+     * configured provider with a trivial "OK" prompt (no SMS, no ledger data)
+     * and reports the typed outcome. Uses the CURRENTLY STORED settings, so a
+     * user saves first, then tests. Off the main thread by the caller.
+     */
+    suspend fun testAiConnection(): AiConnectionProbe.Result = withContext(Dispatchers.IO) {
+        AiConnectionProbe.probe(HttpAiTransport(), aiSettings.read())
+    }
+
+    /**
+     * Optional AI narrative over the month's figures, for the observations card.
+     *
+     * The figures themselves are computed locally and stay authoritative — this
+     * only asks the model to describe numbers the local engine already produced.
+     * Gated the same three ways as SMS parsing; returns null on any failure so
+     * the caller simply shows no narrative. The prompt forbids inventing any
+     * figure that was not supplied, and the reply is length-capped.
+     */
+    suspend fun generateAiNarrative(
+        incomeCents: Long,
+        expenseCents: Long,
+        topCategories: List<Pair<String, Long>>
+    ): String? = withContext(Dispatchers.IO) {
+        if (!(aiSettings.aiEnabled && aiSettings.aiConsentGranted && aiSettings.read().isConfigured)) {
+            return@withContext null
+        }
+        AiInsightsNarrator.narrate(
+            transport = HttpAiTransport(),
+            config = aiSettings.read(),
+            incomeCents = incomeCents,
+            expenseCents = expenseCents,
+            topCategories = topCategories
+        )
+    }
 
     // ------------------------------------------------------------- reads
 
@@ -862,7 +901,8 @@ class SpendingRepository(
                 reviewStatus = planned.reviewStatus,
                 categoryId = suggestCategoryId(
                     listOf(tx.merchantOrCounterparty, tx.provider)
-                        .filter { it.isNotBlank() }.joinToString(" ")
+                        .filter { it.isNotBlank() }.joinToString(" "),
+                    tx.aiCategorySuggestion
                 ),
                 accountId = planned.resolvedAccountId,
                 batchId = batchId,
@@ -1290,15 +1330,34 @@ class SpendingRepository(
         logAudit("rule", ruleId, "deleted", "Category rule removed")
     }
 
-    /** User rules → bundled keywords → uncategorized ("other"). */
-    private suspend fun suggestCategoryId(text: String): String {
-        if (text.isBlank()) return CategoryEntity.UNCATEGORIZED_ID
+    /**
+     * User rules → bundled keywords → AI hint (AI path only) → "other".
+     *
+     * The AI hint is deliberately the LOWEST-priority signal: it is consulted
+     * only when neither a user rule nor a bundled keyword matched, and it must
+     * resolve to a real bundled category id (see [AiCategoryMapper]) or it is
+     * discarded. A user rule or keyword always wins, so the model can never
+     * override what the user already taught the app, and can never invent a
+     * new category.
+     */
+    private suspend fun suggestCategoryId(text: String, aiCategorySuggestion: String? = null): String {
         val rules = spendingDao.getAllCategoryRulesSnapshot().map {
             CategoryRule(id = it.id, keyword = it.keyword, categoryId = it.categoryId, scope = it.scope)
         }
         val available = spendingDao.getAllCategoriesSnapshot().map { it.id }.toSet()
-        return CategorySuggester.suggest(text, rules, available)?.categoryId
-            ?: CategorySuggester.fallbackCategory()
+
+        // Deterministic path stays authoritative.
+        if (text.isNotBlank()) {
+            CategorySuggester.suggest(text, rules, available)?.let { return it.categoryId }
+        }
+
+        // Lowest-priority AI hint: only when local found nothing, and only if it
+        // maps to a category that actually exists in this ledger.
+        AiCategoryMapper.toCategoryId(aiCategorySuggestion)
+            ?.takeIf { available.isEmpty() || it in available }
+            ?.let { return it }
+
+        return CategorySuggester.fallbackCategory()
     }
 
     // ------------------------------------------------------- recurring rules

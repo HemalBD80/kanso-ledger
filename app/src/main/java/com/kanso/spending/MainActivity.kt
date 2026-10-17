@@ -279,6 +279,11 @@ class MainActivity : FragmentActivity() {
         // ---- categorisation rules
         onSaveCategoryRule = { keyword, cat -> viewModel.saveCategoryRule(keyword, cat) },
         onDeleteCategoryRule = { viewModel.deleteCategoryRule(it) },
+        // ---- optional AI diagnostics & narrative
+        onTestAiConnection = { onResult -> viewModel.testAiConnection(onResult) },
+        onGenerateAiNarrative = { income, expense, top, onResult ->
+            viewModel.generateAiNarrative(income, expense, top, onResult)
+        },
         onClearSmartStatus = { viewModel.clearSmartStatusMessage() }
     )
 

@@ -108,7 +108,10 @@ fun SmartSettingsSheet(
             // LocalContext.current must be read in composable scope, NOT inside
             // the non-composable remember lambda (its .current getter is @Composable).
             val aiSettingsContext = LocalContext.current
-            AiConfigSection(store = remember(aiSettingsContext) { AiSettingsStore(aiSettingsContext) })
+            AiConfigSection(
+                store = remember(aiSettingsContext) { AiSettingsStore(aiSettingsContext) },
+                onTestConnection = actions.onTestAiConnection
+            )
 
             Spacer(Modifier.height(14.dp))
 

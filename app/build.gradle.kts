@@ -13,8 +13,8 @@ android {
         applicationId = "com.kanso.spending"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "2.2.1"
+        versionCode = 9
+        versionName = "2.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
