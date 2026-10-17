@@ -55,28 +55,11 @@ android {
 }
 
 ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
+    // NOTE: no `room.schemaLocation` — schema export is disabled on the database
+    // (see KansoDatabase). Exporting it made both variant KSP tasks share one
+    // output directory and intermittently fail CI with "Empty schema file".
     arg("room.incremental", "true")
     arg("room.generateKotlin", "true")
-}
-
-// --- Room schema-export robustness -------------------------------------------
-// Room refuses to deserialize a zero-byte schema JSON ("Empty schema file"),
-// which an interrupted/partial write (e.g. a cancelled CI job) or a restored
-// build-cache artifact can leave behind, failing the entire build for a file it
-// only reads for reference. The schema directory is *generated output*, never a
-// source, so purge any empty schema before KSP reads the directory: a stale,
-// truncated artifact must never be able to break the build.
-val roomSchemaExportDir = file("$projectDir/schemas")
-tasks.matching { it.name.startsWith("ksp") && it.name.endsWith("Kotlin") }.configureEach {
-    val schemaDir = roomSchemaExportDir
-    doFirst {
-        if (schemaDir.isDirectory) {
-            schemaDir.walkTopDown()
-                .filter { it.isFile && it.length() == 0L }
-                .forEach { it.delete() }
-        }
-    }
 }
 
 dependencies {

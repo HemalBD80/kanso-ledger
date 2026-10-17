@@ -42,7 +42,14 @@ import com.kanso.spending.data.local.entity.TransferEntity
         CategoryRuleEntity::class
     ],
     version = 4,
-    exportSchema = true
+    // Schema *export* is off by design: nothing in this repo (no migration
+    // test, no schema consumer) reads the generated JSON, and exporting it made
+    // the two variant KSP tasks write a shared `app/schemas` output directory,
+    // which on CI intermittently left a zero-byte JSON that aborted the whole
+    // build with Room's "Empty schema file". The runtime migrations below are
+    // unaffected by this flag. Flip to `true` (and give each variant its own
+    // location) only if a future migration test actually consumes the schemas.
+    exportSchema = false
 )
 abstract class KansoDatabase : RoomDatabase() {
 
