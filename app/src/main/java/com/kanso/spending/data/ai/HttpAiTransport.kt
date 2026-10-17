@@ -138,7 +138,8 @@ class HttpAiTransport : AiTransport {
                         if (extraction.finishReason == "length") {
                             "the model hit its token limit before answering"
                         } else {
-                            "the provider returned an empty completion"
+                            "the provider returned an empty completion (" +
+                                AiReplyExtractor.describeShape(text) + ")"
                         }
                     )
                 } else {
@@ -146,14 +147,29 @@ class HttpAiTransport : AiTransport {
                 }
             }
             AiReplyExtractor.Extraction.Empty ->
-                AiTransportResult.EmptyReply("the provider returned an empty completion")
+                AiTransportResult.EmptyReply(
+                    "the provider returned an empty completion (" +
+                        AiReplyExtractor.describeShape(text) + ")"
+                )
             AiReplyExtractor.Extraction.Unrecognised ->
                 AiTransportResult.Malformed(
-                    "the response did not contain a recognised message field — check the API format"
+                    "the response did not contain a recognised message field (" +
+                        AiReplyExtractor.describeShape(text) +
+                        ") — check the API format"
                 )
-            // Plain text is still a usable reply (a connectivity probe succeeds);
-            // the schema parser decides whether it is a valid classification.
-            AiReplyExtractor.Extraction.NotJson -> AiTransportResult.Success(text.trim())
+            // A plain-text body can still be a real answer (a connectivity probe
+            // succeeds), but markup — an HTML/XML page — is a wrong endpoint, not
+            // a completion. Reporting it as malformed is what turns a confusing
+            // "MALFORMED_REPLY" into an actionable "wrong base URL / API format".
+            AiReplyExtractor.Extraction.NotJson ->
+                if (AiReplyExtractor.looksLikeMarkup(text)) {
+                    AiTransportResult.Malformed(
+                        "the endpoint returned a non-JSON page, not an API reply " +
+                            "(check the base URL and API format)"
+                    )
+                } else {
+                    AiTransportResult.Success(text.trim())
+                }
         }
     }
 

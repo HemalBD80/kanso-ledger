@@ -154,7 +154,11 @@ class AiSmsInterpreter(private val transport: AiTransport) {
 
         return when (val parsed = AiResponseParser.parse(replyText)) {
             AiResponseParser.ParseOutcome.Malformed ->
-                Outcome.Failed("The AI reply could not be parsed.", FailureKind.MALFORMED_REPLY)
+                Outcome.Failed(
+                    "The AI reply was not the required JSON object (" +
+                        AiReplyExtractor.describeShape(replyText) + ").",
+                    FailureKind.MALFORMED_REPLY
+                )
             is AiResponseParser.ParseOutcome.Parsed ->
                 when (val validated = AiResponseValidator.validate(parsed.proposal, sender, receivedAtMillis)) {
                     is AiValidationResult.Accepted -> Outcome.Extracted(validated.transaction)

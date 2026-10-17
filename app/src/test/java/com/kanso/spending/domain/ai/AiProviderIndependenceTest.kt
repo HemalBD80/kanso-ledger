@@ -373,4 +373,46 @@ class AiProviderIndependenceTest {
             (outcome as AiSmsInterpreter.Outcome.Failed).kind
         )
     }
+
+    // ------------------------------------------------- response-shape tracing
+
+    @Test
+    fun describeShapeReportsStructureNeverValues() {
+        val shape = AiReplyExtractor.describeShape("""{"user_secret":"01712345678","other":1}""")
+        assertTrue("must name the keys", shape.contains("user_secret") && shape.contains("other"))
+        assertFalse("must not leak values", shape.contains("01712345678"))
+    }
+
+    @Test
+    fun describeShapeDistinguishesArrayMarkupAndPlainText() {
+        assertTrue(AiReplyExtractor.describeShape("""[{"a":1},{"b":2}]""").contains("array of 2"))
+        assertTrue(AiReplyExtractor.describeShape("<!DOCTYPE html><html></html>").contains("HTML"))
+        assertTrue(AiReplyExtractor.describeShape("just some words").contains("plain text"))
+        assertEquals("an empty body", AiReplyExtractor.describeShape("   "))
+    }
+
+    @Test
+    fun looksLikeMarkupDetectsPagesNotReplies() {
+        assertTrue(AiReplyExtractor.looksLikeMarkup("<!DOCTYPE html>"))
+        assertTrue(AiReplyExtractor.looksLikeMarkup("  <html lang=\"en\">"))
+        assertFalse(AiReplyExtractor.looksLikeMarkup("""{"choices":[]}"""))
+        assertFalse(AiReplyExtractor.looksLikeMarkup("OK"))
+    }
+
+    @Test
+    fun aNonJsonAnswerReportsItsShapeInTheFailureReason() {
+        val outcome = interpret(AiTransportResult.Success("<html>please log in</html>"))
+        val failed = outcome as AiSmsInterpreter.Outcome.Failed
+        assertEquals(AiSmsInterpreter.FailureKind.MALFORMED_REPLY, failed.kind)
+        assertTrue("reason should name the JSON contract", failed.reason.contains("not the required JSON"))
+        assertTrue("reason should describe the actual shape", failed.reason.contains("HTML"))
+    }
+
+    @Test
+    fun aProseAnswerIsDistinguishedFromAJsonAnswer() {
+        val outcome = interpret(AiTransportResult.Success("Sure, here is the transaction you asked about."))
+        val failed = outcome as AiSmsInterpreter.Outcome.Failed
+        assertEquals(AiSmsInterpreter.FailureKind.MALFORMED_REPLY, failed.kind)
+        assertTrue(failed.reason.contains("plain text"))
+    }
 }

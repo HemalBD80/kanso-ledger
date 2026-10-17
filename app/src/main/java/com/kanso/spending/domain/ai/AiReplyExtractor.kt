@@ -52,6 +52,46 @@ object AiReplyExtractor {
         return message
     }
 
+    /**
+     * True when a body is markup — an HTML/XML page (e.g. a proxy login page or
+     * a 200-wrapped gateway error) rather than an API reply. Used so that "200 OK
+     * with an HTML body" is reported as a wrong endpoint, not a model problem.
+     */
+    fun looksLikeMarkup(text: String): Boolean {
+        val head = text.trimStart()
+        return head.startsWith("<!") ||
+            head.startsWith("<html", ignoreCase = true) ||
+            head.startsWith("<?xml", ignoreCase = true) ||
+            head.startsWith("<error", ignoreCase = true)
+    }
+
+    /**
+     * A **value-free** description of a response body's shape, for diagnostics.
+     *
+     * It reports only structure (JSON object + top-level *key names*, array
+     * length, or "non-JSON plain text / page") — never the message text and never
+     * the credential — so a user can report exactly what their provider returned
+     * without leaking any SMS content.
+     */
+    fun describeShape(body: String?): String {
+        val text = body?.trim().orEmpty()
+        if (text.isEmpty()) return "an empty body"
+        val payload = ssePayload(text) ?: text
+
+        runCatching { JSONObject(payload) }.getOrNull()?.let { obj ->
+            val keys = obj.keys().asSequence().sorted().take(16).joinToString(", ")
+            return "a JSON object with top-level keys [$keys]"
+        }
+        runCatching { JSONArray(payload) }.getOrNull()?.let { arr ->
+            return "a JSON array of ${arr.length()} item(s)"
+        }
+        return when {
+            looksLikeMarkup(text) -> "a non-JSON page (looks like HTML/XML)"
+            text.startsWith("data:") -> "an SSE stream with no usable payload"
+            else -> "non-JSON plain text"
+        }
+    }
+
     /** Extract the assistant text from a raw HTTP response body. */
     fun extract(body: String?): Extraction {
         val raw = body?.trim().orEmpty()
