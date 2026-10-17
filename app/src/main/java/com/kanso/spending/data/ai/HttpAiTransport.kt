@@ -43,7 +43,26 @@ class HttpAiTransport : AiTransport {
     override fun sendChat(config: AiConfig, systemPrompt: String, userMessage: String): AiTransportResult {
         if (!config.isConfigured) return AiTransportResult.NotConfigured
 
-        val request = config.apiFormat.buildRequest(config, systemPrompt, userMessage)
+        // Ask the provider for structured JSON *only where its documented API
+        // supports it* (OpenAI chat/Responses, Gemini, Ollama). Anthropic has no
+        // native JSON mode, so it relies on the prompt. If an endpoint rejects
+        // the JSON-mode parameter with a 400/422, retry ONCE without it — a
+        // feature that is unsupported must degrade, never break the request.
+        val jsonMode = config.apiFormat.supportsJsonMode
+        val first = sendWithRetries(config, systemPrompt, userMessage, jsonMode)
+        if (jsonMode && first is AiTransportResult.HttpError && first.code in JSON_MODE_REJECTED) {
+            return sendWithRetries(config, systemPrompt, userMessage, jsonMode = false)
+        }
+        return first
+    }
+
+    private fun sendWithRetries(
+        config: AiConfig,
+        systemPrompt: String,
+        userMessage: String,
+        jsonMode: Boolean
+    ): AiTransportResult {
+        val request = config.apiFormat.buildRequest(config, systemPrompt, userMessage, jsonMode)
         if (request.url.isBlank()) return AiTransportResult.NotConfigured
         val body = request.body.toByteArray(Charsets.UTF_8)
 
@@ -146,12 +165,13 @@ class HttpAiTransport : AiTransport {
                     AiTransportResult.Success(content)
                 }
             }
-            AiReplyExtractor.Extraction.Empty ->
+            is AiReplyExtractor.Extraction.Empty ->
                 AiTransportResult.EmptyReply(
-                    "the provider returned an empty completion (" +
-                        AiReplyExtractor.describeShape(text) + ")"
+                    extraction.reason
+                        ?: ("the provider returned an empty completion (" +
+                            AiReplyExtractor.describeShape(text) + ")")
                 )
-            AiReplyExtractor.Extraction.Unrecognised ->
+            is AiReplyExtractor.Extraction.Unrecognised ->
                 AiTransportResult.Malformed(
                     "the response did not contain a recognised message field (" +
                         AiReplyExtractor.describeShape(text) +
@@ -213,4 +233,7 @@ class HttpAiTransport : AiTransport {
     }
 
     private val RETRYABLE = setOf(408, 409, 500, 502, 503, 504)
+
+    /** Statuses that may mean "I don't support the JSON-mode parameter". */
+    private val JSON_MODE_REJECTED = setOf(400, 422)
 }

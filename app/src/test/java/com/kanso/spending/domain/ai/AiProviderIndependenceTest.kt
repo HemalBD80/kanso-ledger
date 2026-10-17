@@ -269,24 +269,24 @@ class AiProviderIndependenceTest {
 
     @Test
     fun extractDistinguishesEmptyFromUnknownFromPlainText() {
-        assertEquals(AiReplyExtractor.Extraction.Empty, AiReplyExtractor.extract(null))
-        assertEquals(AiReplyExtractor.Extraction.Empty, AiReplyExtractor.extract("   "))
+        assertTrue(AiReplyExtractor.extract(null) is AiReplyExtractor.Extraction.Empty)
+        assertTrue(AiReplyExtractor.extract("   ") is AiReplyExtractor.Extraction.Empty)
         // A recognised envelope with a null/empty message is EMPTY, not unknown.
-        assertEquals(
-            AiReplyExtractor.Extraction.Empty,
+        assertTrue(
             AiReplyExtractor.extract("""{"choices":[{"message":{"content":null}}]}""")
+                is AiReplyExtractor.Extraction.Empty
         )
-        assertEquals(
-            AiReplyExtractor.Extraction.Empty,
+        assertTrue(
             AiReplyExtractor.extract("""{"choices":[{"message":{"content":[]}}]}""")
+                is AiReplyExtractor.Extraction.Empty
         )
         // A JSON body with no known field is "unrecognised", not "malformed text".
-        assertEquals(
-            AiReplyExtractor.Extraction.Unrecognised,
+        assertTrue(
             AiReplyExtractor.extract("""{"some":"unexpected","shape":true}""")
+                is AiReplyExtractor.Extraction.Unrecognised
         )
         // Plain, non-JSON prose is reported as such (still usable as a reply).
-        assertEquals(AiReplyExtractor.Extraction.NotJson, AiReplyExtractor.extract("OK"))
+        assertTrue(AiReplyExtractor.extract("OK") is AiReplyExtractor.Extraction.NotJson)
     }
 
     @Test

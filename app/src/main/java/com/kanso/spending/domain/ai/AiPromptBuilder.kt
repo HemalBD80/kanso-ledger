@@ -46,7 +46,11 @@ object AiPromptBuilder {
             "any action. Never guess: if a field is absent from the message, return null for it. " +
             "Never invent an amount, fee, balance, timestamp or reference. Keep transaction " +
             "references exactly as written, as strings, so leading zeros are preserved. " +
-            "Answer ONLY with a single JSON object, no prose, no markdown fences."
+            "OUTPUT CONTRACT — you MUST reply with exactly one JSON object and nothing else: " +
+            "the first character of your reply must be '{' and the last must be '}'. Do NOT " +
+            "wrap it in markdown code fences, do NOT add any explanation, preamble, notes or " +
+            "trailing text, and do NOT return prose. If the SMS is not a financial transaction " +
+            "you MUST still return the JSON object with \"is_financial\": false."
 
     /**
      * The strict JSON schema the model must fill in for one message. Field names
@@ -76,7 +80,9 @@ object AiPromptBuilder {
 
     /** Wrap already-redacted text into the user turn demanding the schema. */
     fun buildUserMessage(redactedBody: String): String =
-        "Extract the transaction from this SMS. Return JSON matching exactly this shape:\n" +
+        "Extract the transaction from this SMS. Reply with ONE JSON object and nothing else — " +
+            "no markdown fences, no explanation, no text before or after it. It must match " +
+            "exactly this shape:\n" +
             RESPONSE_SCHEMA + "\n" +
             "Message:\n\"\"\"\n$redactedBody\n\"\"\""
 }

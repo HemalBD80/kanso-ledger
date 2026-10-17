@@ -85,22 +85,42 @@ object AiResponseParser {
 
     /**
      * Locate the JSON object inside a reply. Tolerates a markdown ```json fence
-     * and surrounding prose by scanning for the first balanced top-level object.
+     * and surrounding prose by scanning for a complete, balanced object — but
+     * only accepts one that actually looks like *this* app's proposal (it must
+     * carry one of the contract keys). Arbitrary prose-embedded JSON (a status
+     * object, an example, an error blob) is never mistaken for a classification.
      */
     private fun extractJsonObject(text: String): JSONObject? {
         val unfenced = text
             .replace(Regex("```(?:json)?"), "")
             .trim()
-        // Fast path: the whole reply is the object.
-        runCatching { return JSONObject(unfenced) }
-        // Slow path: first balanced {...} span.
-        val start = unfenced.indexOf('{')
-        if (start < 0) return null
+        // Fast path: the whole reply is the object — but only accept it when it
+        // is actually one of *our* proposal objects. org.json happily parses a
+        // leading object and ignores trailing text, so without this check a junk
+        // `{...}` prefix would be accepted as a classification.
+        runCatching { JSONObject(unfenced) }.getOrNull()
+            ?.takeIf { it.looksLikeProposalObject() }
+            ?.let { return it }
+
+        var index = 0
+        while (true) {
+            val start = unfenced.indexOf('{', index)
+            if (start < 0) return null
+            val end = balancedObjectEnd(unfenced, start) ?: return null
+            val candidate = unfenced.substring(start, end + 1)
+            val parsed = runCatching { JSONObject(candidate) }.getOrNull()
+            if (parsed != null && parsed.looksLikeProposalObject()) return parsed
+            index = end + 1
+        }
+    }
+
+    /** Index of the '}' that closes the '{' at [start], or null if unbalanced. */
+    private fun balancedObjectEnd(text: String, start: Int): Int? {
         var depth = 0
         var inString = false
         var escaped = false
-        for (i in start until unfenced.length) {
-            val c = unfenced[i]
+        for (i in start until text.length) {
+            val c = text[i]
             if (escaped) { escaped = false; continue }
             when {
                 c == '\\' -> escaped = true
@@ -109,15 +129,16 @@ object AiResponseParser {
                 c == '{' -> depth++
                 c == '}' -> {
                     depth--
-                    if (depth == 0) {
-                        val candidate = unfenced.substring(start, i + 1)
-                        return runCatching { JSONObject(candidate) }.getOrNull()
-                    }
+                    if (depth == 0) return i
                 }
             }
         }
         return null
     }
+
+    /** True when an object carries at least one of this app's contract keys. */
+    private fun JSONObject.looksLikeProposalObject(): Boolean =
+        has("is_financial") || has("isFinancial") || has("transaction_type")
 
     private fun toProposal(o: JSONObject): AiTransactionProposal = AiTransactionProposal(
         isFinancial = o.optBoolean("is_financial", o.optBoolean("isFinancial", false)),

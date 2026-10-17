@@ -43,6 +43,8 @@ class AiSmsInterpreter(private val transport: AiTransport) {
         EMPTY_REPLY,
         /** A reply arrived but was not a usable completion / not parseable JSON. */
         MALFORMED_REPLY,
+        /** The model declined to answer (a refusal, not a classification). */
+        REFUSAL,
         /** The model's proposal was parsed but the ledger's validator refused it. */
         VALIDATION_REJECTED,
         /** Anything else (e.g. the consultation threw). */
@@ -61,6 +63,7 @@ class AiSmsInterpreter(private val transport: AiTransport) {
         FailureKind.PROVIDER_HTTP -> "the provider returned an error"
         FailureKind.EMPTY_REPLY -> "the provider returned an empty answer"
         FailureKind.MALFORMED_REPLY -> "the provider reply was unusable"
+        FailureKind.REFUSAL -> "the model declined to classify the message"
         FailureKind.VALIDATION_REJECTED -> "the classification failed validation"
         FailureKind.OTHER -> "the AI call failed"
     }
@@ -154,11 +157,19 @@ class AiSmsInterpreter(private val transport: AiTransport) {
 
         return when (val parsed = AiResponseParser.parse(replyText)) {
             AiResponseParser.ParseOutcome.Malformed ->
-                Outcome.Failed(
-                    "The AI reply was not the required JSON object (" +
-                        AiReplyExtractor.describeShape(replyText) + ").",
-                    FailureKind.MALFORMED_REPLY
-                )
+                if (AiReplyExtractor.looksLikeRefusal(replyText)) {
+                    Outcome.Failed(
+                        "The model declined to classify the message (a refusal, not a " +
+                            "classification).",
+                        FailureKind.REFUSAL
+                    )
+                } else {
+                    Outcome.Failed(
+                        "The AI reply was not the required JSON object (" +
+                            AiReplyExtractor.describeShape(replyText) + ").",
+                        FailureKind.MALFORMED_REPLY
+                    )
+                }
             is AiResponseParser.ParseOutcome.Parsed ->
                 when (val validated = AiResponseValidator.validate(parsed.proposal, sender, receivedAtMillis)) {
                     is AiValidationResult.Accepted -> Outcome.Extracted(validated.transaction)

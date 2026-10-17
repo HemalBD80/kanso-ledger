@@ -62,12 +62,32 @@ enum class AiApiFormat(
         hint = "POST {base}/api/chat with {model, messages, stream:false}. A local server needs no real key — any placeholder works."
     );
 
-    /** Build the complete request for one message. Pure and unit-tested. */
-    fun buildRequest(config: AiConfig, systemPrompt: String, userMessage: String): AiHttpRequest =
+    /**
+     * Whether this provider documents a native structured-JSON mode. When true
+     * the request asks for JSON (and [com.kanso.spending.data.ai.HttpAiTransport]
+     * retries without it if the endpoint rejects the parameter); Anthropic has
+     * no such mode, so it relies on the prompt alone. This is a *documented
+     * capability*, never an assumption about an endpoint.
+     */
+    val supportsJsonMode: Boolean
+        get() = this != ANTHROPIC_MESSAGES
+
+    /**
+     * Build the complete request for one message.
+     *
+     * @param jsonMode when true (and [supportsJsonMode]) the body also requests
+     *   the provider's documented structured-JSON output.
+     */
+    fun buildRequest(
+        config: AiConfig,
+        systemPrompt: String,
+        userMessage: String,
+        jsonMode: Boolean = true
+    ): AiHttpRequest =
         AiHttpRequest(
             url = resolveUrl(config.baseUrl, config.modelId),
             headers = headersFor(config.apiKey.orEmpty()),
-            body = bodyFor(config.modelId, systemPrompt, userMessage)
+            body = bodyFor(config.modelId, systemPrompt, userMessage, jsonMode)
         )
 
     /**
@@ -112,7 +132,12 @@ enum class AiApiFormat(
         return base
     }
 
-    private fun bodyFor(modelId: String, systemPrompt: String, userMessage: String): String = when (this) {
+    private fun bodyFor(
+        modelId: String,
+        systemPrompt: String,
+        userMessage: String,
+        jsonMode: Boolean
+    ): String = when (this) {
         OPENAI_CHAT -> JSONObject()
             .put("model", modelId)
             .put("temperature", 0.0)
@@ -124,6 +149,11 @@ enum class AiApiFormat(
                     .put(JSONObject().put("role", "system").put("content", systemPrompt))
                     .put(JSONObject().put("role", "user").put("content", userMessage))
             )
+            .apply {
+                // Documented OpenAI-compatible structured output. Some gateways
+                // reject it; the transport retries without it on a 400/422.
+                if (jsonMode) put("response_format", JSONObject().put("type", "json_object"))
+            }
             .toString()
 
         OPENAI_RESPONSES -> JSONObject()
@@ -131,6 +161,18 @@ enum class AiApiFormat(
             .put("instructions", systemPrompt)
             .put("input", userMessage)
             .put("max_output_tokens", MAX_TOKENS)
+            .apply {
+                // Responses API structured output lives under `text.format`.
+                if (jsonMode) {
+                    put(
+                        "text",
+                        JSONObject().put(
+                            "format",
+                            JSONObject().put("type", "json_object")
+                        )
+                    )
+                }
+            }
             .toString()
 
         ANTHROPIC_MESSAGES -> JSONObject()
@@ -159,6 +201,10 @@ enum class AiApiFormat(
             .put(
                 "generationConfig",
                 JSONObject().put("temperature", 0.0).put("maxOutputTokens", MAX_TOKENS)
+                    .apply {
+                        // Documented Gemini JSON output mode.
+                        if (jsonMode) put("responseMimeType", "application/json")
+                    }
             )
             .toString()
 
@@ -172,6 +218,10 @@ enum class AiApiFormat(
                     .put(JSONObject().put("role", "user").put("content", userMessage))
             )
             .put("options", JSONObject().put("temperature", 0.0).put("num_predict", MAX_TOKENS))
+            .apply {
+                // Documented Ollama JSON mode.
+                if (jsonMode) put("format", "json")
+            }
             .toString()
     }
 

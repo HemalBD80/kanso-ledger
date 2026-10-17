@@ -24,15 +24,42 @@ object AiReplyExtractor {
         /** Usable assistant text (a JSON payload or plain prose). */
         data class Text(val text: String, val finishReason: String? = null) : Extraction()
 
-        /** A recognised envelope whose message field was empty/null. */
-        data object Empty : Extraction()
+        /**
+         * A recognised envelope whose *answer* field was empty/null. [reason]
+         * distinguishes the common cause — a reasoning model that spent its whole
+         * budget on the hidden trace and never produced an answer.
+         */
+        data class Empty(val reason: String? = null) : Extraction()
 
         /** A JSON body with none of the known message fields. */
-        data object Unrecognised : Extraction()
+        data class Unrecognised(val reason: String? = null) : Extraction()
 
         /** A non-JSON body (plain text, HTML, …). */
         data object NotJson : Extraction()
     }
+
+    /** Reason attached to an [Extraction.Empty] that only carried hidden reasoning. */
+    const val REASONING_ONLY_REASON =
+        "the model returned only a hidden reasoning trace and no answer"
+
+    /**
+     * True when a reply is a refusal/declination rather than a classification.
+     * Applied only to the *model's* text (never the SMS), so a genuine JSON
+     * answer can never be mistaken for one — refusals are checked only after a
+     * reply has already failed to parse as JSON.
+     */
+    fun looksLikeRefusal(text: String): Boolean {
+        val lower = text.lowercase()
+        return REFUSAL_MARKERS.any { lower.contains(it) }
+    }
+
+    private val REFUSAL_MARKERS = listOf(
+        "i can't", "i cannot", "i can not", "i'm unable", "i am unable",
+        "i won't", "i will not", "i'm not able", "i am not able",
+        "cannot assist", "can't assist", "unable to assist",
+        "cannot help", "can't help", "unable to help",
+        "i must decline", "i refuse", "i'm sorry, but", "i am sorry, but"
+    )
 
     /**
      * If the body is a provider-level error object (`{"error": {...}}`), return
@@ -87,6 +114,7 @@ object AiReplyExtractor {
         }
         return when {
             looksLikeMarkup(text) -> "a non-JSON page (looks like HTML/XML)"
+            looksLikeRefusal(text) -> "a refusal message (the model declined to answer)"
             text.startsWith("data:") -> "an SSE stream with no usable payload"
             else -> "non-JSON plain text"
         }
@@ -95,10 +123,10 @@ object AiReplyExtractor {
     /** Extract the assistant text from a raw HTTP response body. */
     fun extract(body: String?): Extraction {
         val raw = body?.trim().orEmpty()
-        if (raw.isEmpty()) return Extraction.Empty
+        if (raw.isEmpty()) return Extraction.Empty()
 
         val text = ssePayload(raw) ?: raw
-        if (text.isBlank()) return Extraction.Empty
+        if (text.isBlank()) return Extraction.Empty()
 
         runCatching { JSONObject(text) }.getOrNull()?.let { return fromObject(it) }
 
@@ -108,7 +136,7 @@ object AiReplyExtractor {
                 val result = fromObject(element)
                 if (result is Extraction.Text) return result
             }
-            return Extraction.Unrecognised
+            return Extraction.Unrecognised("a JSON array with no completion object")
         }
 
         // Not JSON. A bare proposal is still usable; other prose is returned as
@@ -146,36 +174,43 @@ object AiReplyExtractor {
         obj.optJSONObject("message")?.opt("content")
             ?.let { contentOf(it)?.let { text -> return Extraction.Text(text, finishReason) } }
 
-        // 3. OpenAI Responses: output_text, or output[].content[].text.
+        // 3. OpenAI Responses: output_text, or output[].content[].text. A
+        //    reasoning item (`type: "reasoning"`) is skipped: folding its trace
+        //    into the answer is what produced "non-JSON plain text" for a reply
+        //    that actually carried a valid JSON message item.
         obj.optString("output_text").takeIf { it.isNotBlank() }
             ?.let { return Extraction.Text(it, finishReason) }
         obj.optJSONArray("output")?.let { output ->
             val joined = StringBuilder()
             for (i in 0 until output.length()) {
-                val parts = output.optJSONObject(i)?.optJSONArray("content") ?: continue
+                val item = output.optJSONObject(i) ?: continue
+                if (item.isReasoningItem()) continue
+                val parts = item.optJSONArray("content") ?: continue
                 for (j in 0 until parts.length()) {
-                    parts.optJSONObject(j)?.optString("text")?.takeIf { it.isNotBlank() }
-                        ?.let { joined.append(it) }
+                    val part = parts.optJSONObject(j) ?: continue
+                    if (part.isReasoningItem()) continue
+                    part.optString("text").takeIf { it.isNotBlank() }?.let { joined.append(it) }
                 }
             }
             if (joined.isNotBlank()) return Extraction.Text(joined.toString(), finishReason)
         }
 
-        // 4. Google Gemini: candidates[].content.parts[].text.
+        // 4. Google Gemini: candidates[].content.parts[].text (skip "thought" parts).
         obj.optJSONArray("candidates")?.let { candidates ->
             val joined = StringBuilder()
             for (i in 0 until candidates.length()) {
                 val parts = candidates.optJSONObject(i)
                     ?.optJSONObject("content")?.optJSONArray("parts") ?: continue
                 for (j in 0 until parts.length()) {
-                    parts.optJSONObject(j)?.optString("text")?.takeIf { it.isNotBlank() }
-                        ?.let { joined.append(it) }
+                    val part = parts.optJSONObject(j) ?: continue
+                    if (part.optBoolean("thought", false) || part.isReasoningItem()) continue
+                    part.optString("text").takeIf { it.isNotBlank() }?.let { joined.append(it) }
                 }
             }
             if (joined.isNotBlank()) return Extraction.Text(joined.toString(), finishReason)
         }
 
-        // 5. Anthropic: content (string or blocks[] with .text).
+        // 5. Anthropic: content (string or blocks[] with .text; thinking skipped).
         obj.opt("content")?.let { content ->
             contentOf(content)?.let { return Extraction.Text(it, finishReason) }
         }
@@ -193,7 +228,13 @@ object AiReplyExtractor {
         // 8. Bounded tree scan for a nested proposal (string or object).
         findProposalText(obj)?.let { return Extraction.Text(it, finishReason) }
 
-        return if (recognised) Extraction.Empty else Extraction.Unrecognised
+        // A recognised envelope with no answer of its own: if all it carries is a
+        // hidden reasoning trace, say so precisely instead of "empty".
+        return when {
+            recognised && hasReasoningTrace(obj) -> Extraction.Empty(REASONING_ONLY_REASON)
+            recognised -> Extraction.Empty()
+            else -> Extraction.Unrecognised("no recognised message field")
+        }
     }
 
     /** Extract text from a `content` value that may be a string, block array or object. */
@@ -206,6 +247,9 @@ object AiReplyExtractor {
                 when (val element = value.opt(i)) {
                     is String -> joined.append(element)
                     is JSONObject -> {
+                        // Skip reasoning/thinking blocks so the hidden trace never
+                        // becomes the "answer".
+                        if (element.isReasoningItem()) continue
                         val part = element.optString("text").ifBlank { element.optString("content") }
                         if (part.isNotBlank()) joined.append(part)
                     }
@@ -214,11 +258,44 @@ object AiReplyExtractor {
             }
             joined.toString().takeIf { it.isNotBlank() }
         }
-        is JSONObject -> {
+        is JSONObject -> if (value.isReasoningItem()) {
+            null
+        } else {
             val text = value.optString("text").ifBlank { value.optString("content") }
             text.takeIf { it.isNotBlank() } ?: value.toString().takeIf { it.isNotBlank() }
         }
         else -> value.toString().takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * True when a JSON node is a hidden reasoning/thinking item rather than the
+     * final answer. Covers the OpenAI Responses `type:"reasoning"`, Anthropic
+     * `type:"thinking"`/`redacted_thinking`, Gemini `thought` parts, and the
+     * DeepSeek-style `reasoning_content`/`reasoning` fields.
+     */
+    private fun JSONObject.isReasoningItem(): Boolean {
+        when (optString("type").lowercase()) {
+            "reasoning", "reasoning_text", "thinking", "redacted_thinking" -> return true
+        }
+        return has("reasoning_content") || has("reasoning") || has("thinking")
+    }
+
+    /** True when any element of a recognised envelope carries a hidden trace. */
+    private fun hasReasoningTrace(obj: JSONObject): Boolean {
+        if (obj.has("reasoning_content") || obj.has("reasoning") || obj.has("thinking")) return true
+        obj.optJSONObject("message")?.let { if (it.isReasoningItem()) return true }
+        obj.optJSONArray("choices")?.let { choices ->
+            for (i in 0 until choices.length()) {
+                val message = choices.optJSONObject(i)?.optJSONObject("message") ?: continue
+                if (message.isReasoningItem()) return true
+            }
+        }
+        obj.optJSONArray("output")?.let { output ->
+            for (i in 0 until output.length()) {
+                if (output.optJSONObject(i)?.isReasoningItem() == true) return true
+            }
+        }
+        return false
     }
 
     private fun looksLikeProposalText(text: String): Boolean =
@@ -234,8 +311,11 @@ object AiReplyExtractor {
         if (depth > 8) return null
         when (node) {
             is JSONObject -> {
+                // Never let a hidden reasoning/thinking trace become the answer.
+                if (node.isReasoningItem()) return null
                 if (looksLikeProposalObject(node)) return node.toString()
                 for (key in node.keys()) {
+                    if (key in REASONING_KEYS) continue
                     val child = node.opt(key)
                     if (child is String && looksLikeProposalText(child)) return child
                     findProposalText(child, depth + 1)?.let { return it }
@@ -265,6 +345,9 @@ object AiReplyExtractor {
     private val MISC_TEXT_FIELDS = listOf(
         "response", "generated_text", "text", "completion", "result", "answer", "output"
     )
+
+    /** JSON keys that carry a hidden reasoning trace, never the answer. */
+    private val REASONING_KEYS = setOf("reasoning_content", "reasoning", "thinking")
 
     /** Keys whose presence means "this is a completion envelope, just empty". */
     private val RECOGNISED_ENVELOPE_KEYS = listOf(
